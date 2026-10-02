@@ -1,9 +1,9 @@
 import Foundation
-import Network
 import Darwin
 import BeakrNetCore
 import BeakrNetSecurity
 import BeakrNetAuthority
+import BeakrNetRelayTransport
 
 @main
 struct BeakrNetNodeCLI {
@@ -80,7 +80,7 @@ struct BeakrNetNodeCLI {
         } else {
             portValue = 7878
         }
-        guard let port = NWEndpoint.Port(rawValue: portValue) else {
+        guard portValue > 0 else {
             throw NodeCLIError.invalidPort
         }
 
@@ -88,93 +88,43 @@ struct BeakrNetNodeCLI {
         let credential = try CredentialFiles.loadCredential(
             from: URL(fileURLWithPath: credentialPath)
         )
-        guard credential.claims.nodeID == identity.nodeID,
-              credential.claims.nodePublicKey == identity.publicKeyRepresentation else {
-            throw NodeCLIError.credentialIdentityMismatch
-        }
         let preSharedKey = try RelayTLSConfiguration.loadPreSharedKey(
             from: URL(fileURLWithPath: preSharedKeyPath)
         )
-        let parameters = try RelayTLSConfiguration.parameters(preSharedKey: preSharedKey)
-        let connection = NWConnection(
-            host: NWEndpoint.Host("127.0.0.1"),
-            port: port,
-            using: parameters
-        )
-        try await start(connection)
-        defer { connection.cancel() }
-        try await authenticate(
+        let configuration = try RelayTransportConfiguration(
+            host: "127.0.0.1",
+            port: portValue,
+            preSharedKey: preSharedKey,
             identity: identity,
-            credential: credential,
-            over: connection
+            credential: credential
         )
-
-        switch mode {
-        case .identity, .psk:
-            return
-        case .receive:
-            try await receive(count: count, nodeID: nodeID, from: connection)
-        case .send:
-            guard let peerUUID else {
-                printUsage()
-                return
-            }
-            try await send(
-                count: count,
-                from: nodeID,
-                to: NodeID(rawValue: peerUUID),
-                over: connection
-            )
-        }
-    }
-
-    private static func authenticate(
-        identity: NodeIdentity,
-        credential: NodeCredential,
-        over connection: NWConnection
-    ) async throws {
-        try await NetworkConnectionIO.send(
-            .clientHello(credential: credential),
-            over: connection
-        )
-        guard case .serverChallenge(let challenge) = try await NetworkConnectionIO.receive(
-            from: connection
-        ) else {
-            throw NodeCLIError.authenticationFailed
-        }
-        let signature = try identity.signature(forRegistrationChallenge: challenge)
-        try await NetworkConnectionIO.send(.clientProof(signature), over: connection)
-        guard case .registrationAccepted(let nodeID) = try await NetworkConnectionIO.receive(
-            from: connection
-        ), nodeID == identity.nodeID else {
-            throw NodeCLIError.authenticationFailed
-        }
+        let transport = RelayTransport(configuration: configuration)
+        try await transport.connect()
         print("Authenticated as \(nodeID.rawValue.uuidString)")
-    }
 
-    private static func start(_ connection: NWConnection) async throws {
-        try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<Void, any Error>) in
-            let gate = ConnectionStartGate()
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    if gate.claim() {
-                        continuation.resume()
-                    }
-                case .failed(let error):
-                    if gate.claim() {
-                        continuation.resume(throwing: error)
-                    }
-                case .cancelled:
-                    if gate.claim() {
-                        continuation.resume(throwing: NodeCLIError.connectionCancelled)
-                    }
-                default:
-                    break
+        do {
+            switch mode {
+            case .identity, .psk:
+                break
+            case .receive:
+                try await receive(count: count, nodeID: nodeID, from: transport)
+            case .send:
+                guard let peerUUID else {
+                    printUsage()
+                    await transport.close()
+                    return
                 }
+                try await send(
+                    count: count,
+                    from: nodeID,
+                    to: NodeID(rawValue: peerUUID),
+                    over: transport
+                )
             }
-            connection.start(queue: DispatchQueue(label: "BeakrNetNodeCLI.connection"))
+            await transport.close()
+        } catch {
+            await transport.close()
+            throw error
         }
     }
 
@@ -182,7 +132,7 @@ struct BeakrNetNodeCLI {
         count: Int,
         from source: NodeID,
         to destination: NodeID,
-        over connection: NWConnection
+        over transport: RelayTransport
     ) async throws {
         let sessionID = SessionID()
         for sequenceNumber in 1...count {
@@ -194,7 +144,7 @@ struct BeakrNetNodeCLI {
                 payloadType: "ping",
                 payload: Data("ping-\(sequenceNumber)".utf8)
             )
-            try await NetworkConnectionIO.send(.envelope(envelope), over: connection)
+            try await transport.send(envelope)
         }
         print("Sent \(count) envelopes to \(destination.rawValue.uuidString)")
     }
@@ -202,13 +152,14 @@ struct BeakrNetNodeCLI {
     private static func receive(
         count: Int,
         nodeID: NodeID,
-        from connection: NWConnection
+        from transport: RelayTransport
     ) async throws {
         var receivedSequences: [UInt64] = []
         while receivedSequences.count < count {
-            let message = try await NetworkConnectionIO.receive(from: connection)
-            guard case .envelope(let envelope) = message,
-                  envelope.destinationNodeID == nodeID else { continue }
+            guard let envelope = await transport.receive() else {
+                throw NodeCLIError.connectionCancelled
+            }
+            guard envelope.destinationNodeID == nodeID else { continue }
             receivedSequences.append(envelope.sequenceNumber)
             print("Received sequence \(envelope.sequenceNumber)")
         }
@@ -238,21 +189,6 @@ private enum Mode: String {
 
 private enum NodeCLIError: Error {
     case invalidPort
-    case authenticationFailed
-    case credentialIdentityMismatch
     case connectionCancelled
     case unexpectedSequence([UInt64])
-}
-
-private final class ConnectionStartGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var isClaimed = false
-
-    func claim() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !isClaimed else { return false }
-        isClaimed = true
-        return true
-    }
 }

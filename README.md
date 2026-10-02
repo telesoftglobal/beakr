@@ -14,6 +14,8 @@ The package deliberately has no dependency on the existing Beakr prototype, XYZ 
 
 Bonjour, Internet relay, WatchConnectivity, production credentials, and application integration are later milestones.
 
+`BeakrNetRelayTransport` now provides the reusable encrypted relay client used by the command-line node, including credential authentication, incoming-envelope delivery, connection diagnostics, and automatic reconnect with backoff.
+
 Run the package tests with:
 
 ```sh

@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "BeakrNetCore", targets: ["BeakrNetCore"]),
         .library(name: "BeakrNetSecurity", targets: ["BeakrNetSecurity"]),
         .library(name: "BeakrNetAuthority", targets: ["BeakrNetAuthority"]),
+        .library(name: "BeakrNetRelayTransport", targets: ["BeakrNetRelayTransport"]),
         .library(name: "BeakrNetTestSupport", targets: ["BeakrNetTestSupport"]),
         .executable(name: "BeakrNetHandoffLab", targets: ["BeakrNetHandoffLab"]),
         .executable(name: "BeakrNetRelayServer", targets: ["BeakrNetRelayServer"]),
@@ -30,6 +31,10 @@ let package = Package(
             dependencies: ["BeakrNetCore", "BeakrNetSecurity"]
         ),
         .target(
+            name: "BeakrNetRelayTransport",
+            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority"]
+        ),
+        .target(
             name: "BeakrNetTestSupport",
             dependencies: ["BeakrNetCore"]
         ),
@@ -43,7 +48,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "BeakrNetNodeCLI",
-            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority"]
+            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority", "BeakrNetRelayTransport"]
         ),
         .executableTarget(
             name: "BeakrNetCredentialTool",
@@ -51,7 +56,7 @@ let package = Package(
         ),
         .testTarget(
             name: "BeakrNetCoreTests",
-            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority", "BeakrNetTestSupport"]
+            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority", "BeakrNetRelayTransport", "BeakrNetTestSupport"]
         )
     ]
 )

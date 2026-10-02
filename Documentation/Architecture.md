@@ -39,3 +39,7 @@ Discovery locates a candidate. Authentication establishes who it is. Authorizati
 The first meaningful proof is two nodes retaining one logical session while moving between relayed and local transports without losing or duplicating messages.
 
 `BeakrNetHandoffLab` provides the first deterministic version of this proof. It moves 100 messages over simulated relay, local, and relay routes. One acknowledgement is intentionally omitted so the message is retried and rejected as a duplicate at the receiver before being acknowledged.
+
+## Relay client
+
+`BeakrNetRelayTransport` is an actor-based reusable client transport. It owns TLS establishment, credential presentation, node challenge-response, frame reception, diagnostics, cancellation, and automatic reconnect with backoff. It does not silently replay application envelopes: unacknowledged-message policy remains part of the logical session and delivery layer.
