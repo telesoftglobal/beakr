@@ -32,4 +32,10 @@ An independent P-256 authority signs versioned node credentials. Signed claims b
 
 Credential signing uses an explicit length-prefixed binary transcript rather than serialized JSON bytes. JSON is only the file and wire representation. This avoids depending on encoder key order for signature verification.
 
-The development authority uses mode-0600 key files. It is not yet an online enrollment service and has no revocation mechanism.
+The development authority uses mode-0600 key files. It is not yet an online enrollment service.
+
+## Revocation snapshots
+
+The authority can issue a signed snapshot containing revoked credential IDs, timestamps, and reasons. The relay verifies the snapshot against its configured authority key at startup and rejects revoked credentials during registration. A malformed snapshot or one from another authority prevents relay startup.
+
+Snapshots are deliberately static in this milestone. Production operation will require atomic refresh, freshness policy, rollback protection, and propagation to active relay instances. Revocation currently prevents new registration but does not disconnect a node until its existing connection ends.

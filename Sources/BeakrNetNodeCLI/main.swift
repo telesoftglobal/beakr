@@ -1,12 +1,23 @@
 import Foundation
 import Network
+import Darwin
 import BeakrNetCore
 import BeakrNetSecurity
 import BeakrNetAuthority
 
 @main
 struct BeakrNetNodeCLI {
-    static func main() async throws {
+    static func main() async {
+        do {
+            try await run()
+        } catch {
+            let message = "BeakrNetNodeCLI: \(error)\n"
+            FileHandle.standardError.write(Data(message.utf8))
+            exit(EXIT_FAILURE)
+        }
+    }
+
+    private static func run() async throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
         guard arguments.count >= 2,
               let mode = Mode(rawValue: arguments[0]) else {

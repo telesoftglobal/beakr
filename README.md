@@ -40,7 +40,8 @@ swift run BeakrNetNodeCLI identity /tmp/beakrnet-node-a.key
 swift run BeakrNetNodeCLI identity /tmp/beakrnet-node-b.key
 swift run BeakrNetCredentialTool issue /tmp/beakrnet-authority.key /tmp/beakrnet-node-a.key /tmp/beakrnet-node-a.credential development ping 86400
 swift run BeakrNetCredentialTool issue /tmp/beakrnet-authority.key /tmp/beakrnet-node-b.key /tmp/beakrnet-node-b.credential development ping 86400
-swift run BeakrNetRelayServer 7878 /tmp/beakrnet-relay.psk /tmp/beakrnet-authority.pub development
+swift run BeakrNetCredentialTool create-revocations /tmp/beakrnet-authority.key /tmp/beakrnet-revocations.json
+swift run BeakrNetRelayServer 7878 /tmp/beakrnet-relay.psk /tmp/beakrnet-authority.pub development /tmp/beakrnet-revocations.json
 swift run BeakrNetNodeCLI receive /tmp/beakrnet-node-b.key 10 /tmp/beakrnet-relay.psk /tmp/beakrnet-node-b.credential
 swift run BeakrNetNodeCLI send /tmp/beakrnet-node-a.key 10 <node-b-uuid> /tmp/beakrnet-relay.psk /tmp/beakrnet-node-a.credential
 ```

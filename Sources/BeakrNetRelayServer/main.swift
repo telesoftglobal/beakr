@@ -8,9 +8,9 @@ import BeakrNetAuthority
 struct BeakrNetRelayServerMain {
     static func main() async throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
-        guard arguments.count == 4,
+        guard arguments.count == 5,
               let portValue = UInt16(arguments[0]) else {
-            print("Usage: BeakrNetRelayServer <port> <psk-file> <authority-public-key> <environment>")
+            print("Usage: BeakrNetRelayServer <port> <psk-file> <authority-public-key> <environment> <revocation-snapshot>")
             return
         }
         guard let port = NWEndpoint.Port(rawValue: portValue) else {
@@ -22,12 +22,20 @@ struct BeakrNetRelayServerMain {
         let authorityPublicKey = try Data(
             contentsOf: URL(fileURLWithPath: arguments[2])
         )
+        let revocationSnapshot = try CredentialFiles.loadRevocationSnapshot(
+            from: URL(fileURLWithPath: arguments[4])
+        )
+        let revokedCredentialIDs = try RevocationVerifier.verify(
+            revocationSnapshot,
+            trustedAuthorityPublicKey: authorityPublicKey
+        )
 
         let server = try RelayServer(
             port: port,
             preSharedKey: preSharedKey,
             authorityPublicKey: authorityPublicKey,
-            environment: arguments[3]
+            environment: arguments[3],
+            revokedCredentialIDs: revokedCredentialIDs
         )
         try await server.run()
     }
@@ -38,20 +46,23 @@ private actor RelayServer {
     private let port: NWEndpoint.Port
     private let authorityPublicKey: Data
     private let environment: String
+    private let revokedCredentialIDs: Set<UUID>
+    private let offlineQueue = BoundedRelayQueue(policy: .development)
     private var connections: [NodeID: NWConnection] = [:]
     private var nodeIDsByConnection: [ObjectIdentifier: NodeID] = [:]
-    private var pendingMessages: [NodeID: [RelayWireMessage]] = [:]
     private var authenticationAttempts: [ObjectIdentifier: AuthenticationAttempt] = [:]
 
     init(
         port: NWEndpoint.Port,
         preSharedKey: Data,
         authorityPublicKey: Data,
-        environment: String
+        environment: String,
+        revokedCredentialIDs: Set<UUID>
     ) throws {
         self.port = port
         self.authorityPublicKey = authorityPublicKey
         self.environment = environment
+        self.revokedCredentialIDs = revokedCredentialIDs
         let parameters = try RelayTLSConfiguration.parameters(preSharedKey: preSharedKey)
         parameters.requiredLocalEndpoint = .hostPort(
             host: NWEndpoint.Host("127.0.0.1"),
@@ -101,7 +112,8 @@ private actor RelayServer {
                 try CredentialVerifier.verify(
                     credential,
                     trustedAuthorityPublicKey: authorityPublicKey,
-                    environment: environment
+                    environment: environment,
+                    revokedCredentialIDs: revokedCredentialIDs
                 )
             } catch {
                 try await NetworkConnectionIO.send(.registrationRejected, over: connection)
@@ -141,9 +153,12 @@ private actor RelayServer {
                 over: connection
             )
 
-            let queued = pendingMessages.removeValue(forKey: nodeID) ?? []
-            for queuedMessage in queued {
-                try await NetworkConnectionIO.send(queuedMessage, over: connection)
+            let queued = await offlineQueue.drain(for: nodeID)
+            for queuedEnvelope in queued {
+                try await NetworkConnectionIO.send(
+                    .envelope(queuedEnvelope),
+                    over: connection
+                )
             }
 
         case .envelope(let envelope):
@@ -154,7 +169,10 @@ private actor RelayServer {
             if let destination = connections[envelope.destinationNodeID] {
                 try await NetworkConnectionIO.send(outbound, over: destination)
             } else {
-                pendingMessages[envelope.destinationNodeID, default: []].append(outbound)
+                await offlineQueue.enqueue(
+                    envelope,
+                    for: envelope.destinationNodeID
+                )
             }
 
         case .serverChallenge, .registrationAccepted, .registrationRejected:

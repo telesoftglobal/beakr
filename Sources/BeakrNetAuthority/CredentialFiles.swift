@@ -38,6 +38,25 @@ public enum CredentialFiles {
         try JSONDecoder().decode(NodeCredential.self, from: Data(contentsOf: url))
     }
 
+    public static func saveRevocationSnapshot(
+        _ snapshot: CredentialRevocationSnapshot,
+        to url: URL
+    ) throws {
+        try createParentDirectory(for: url)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(snapshot).write(to: url, options: .atomic)
+    }
+
+    public static func loadRevocationSnapshot(
+        from url: URL
+    ) throws -> CredentialRevocationSnapshot {
+        try JSONDecoder().decode(
+            CredentialRevocationSnapshot.self,
+            from: Data(contentsOf: url)
+        )
+    }
+
     private static func createParentDirectory(for url: URL) throws {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),

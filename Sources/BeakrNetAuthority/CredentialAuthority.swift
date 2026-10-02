@@ -51,6 +51,7 @@ public enum CredentialVerificationError: Error, Equatable, Sendable {
     case invalidSignature
     case nodeIdentityMismatch
     case wrongEnvironment
+    case revoked
     case issuedInFuture
     case expired
     case invalidValidityWindow
@@ -61,6 +62,7 @@ public enum CredentialVerifier {
         _ credential: NodeCredential,
         trustedAuthorityPublicKey: Data,
         environment: String,
+        revokedCredentialIDs: Set<UUID> = [],
         now: Date = Date(),
         allowedClockSkew: TimeInterval = 60
     ) throws {
@@ -78,6 +80,9 @@ public enum CredentialVerifier {
         }
         guard claims.environment == environment else {
             throw CredentialVerificationError.wrongEnvironment
+        }
+        guard !revokedCredentialIDs.contains(claims.credentialID) else {
+            throw CredentialVerificationError.revoked
         }
         guard claims.expiresAtMilliseconds > claims.issuedAtMilliseconds else {
             throw CredentialVerificationError.invalidValidityWindow

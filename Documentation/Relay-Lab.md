@@ -11,6 +11,9 @@ The relay lab proves that separate processes can register stable node identifier
 - P-256 challenge-response authentication
 - Node IDs derived from public keys
 - Authority-signed node credentials with environment and expiry enforcement
+- Signed credential-revocation snapshot loaded at startup
+- Offline queue capped at 100 messages per node and 1,000 total
+- Offline messages expire after five minutes
 - One active connection per authenticated Node ID
 - In-memory queuing when a destination is disconnected
 - Source Node ID checked against the connection registration
@@ -20,7 +23,7 @@ The relay lab proves that separate processes can register stable node identifier
 - Authority-issued credential validation
 - Public certificate or production TLS identity
 - Durable queued delivery
-- Queue bounds and expiry
+- Durable queued delivery
 - Delivery acknowledgements across the relay wire
 - Account ownership and authorization
 - Internet deployment
