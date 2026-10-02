@@ -12,16 +12,22 @@ let package = Package(
     products: [
         .library(name: "BeakrNetCore", targets: ["BeakrNetCore"]),
         .library(name: "BeakrNetSecurity", targets: ["BeakrNetSecurity"]),
+        .library(name: "BeakrNetAuthority", targets: ["BeakrNetAuthority"]),
         .library(name: "BeakrNetTestSupport", targets: ["BeakrNetTestSupport"]),
         .executable(name: "BeakrNetHandoffLab", targets: ["BeakrNetHandoffLab"]),
         .executable(name: "BeakrNetRelayServer", targets: ["BeakrNetRelayServer"]),
-        .executable(name: "BeakrNetNodeCLI", targets: ["BeakrNetNodeCLI"])
+        .executable(name: "BeakrNetNodeCLI", targets: ["BeakrNetNodeCLI"]),
+        .executable(name: "BeakrNetCredentialTool", targets: ["BeakrNetCredentialTool"])
     ],
     targets: [
         .target(name: "BeakrNetCore"),
         .target(
             name: "BeakrNetSecurity",
             dependencies: ["BeakrNetCore"]
+        ),
+        .target(
+            name: "BeakrNetAuthority",
+            dependencies: ["BeakrNetCore", "BeakrNetSecurity"]
         ),
         .target(
             name: "BeakrNetTestSupport",
@@ -33,15 +39,19 @@ let package = Package(
         ),
         .executableTarget(
             name: "BeakrNetRelayServer",
-            dependencies: ["BeakrNetCore", "BeakrNetSecurity"]
+            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority"]
         ),
         .executableTarget(
             name: "BeakrNetNodeCLI",
-            dependencies: ["BeakrNetCore", "BeakrNetSecurity"]
+            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority"]
+        ),
+        .executableTarget(
+            name: "BeakrNetCredentialTool",
+            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority"]
         ),
         .testTarget(
             name: "BeakrNetCoreTests",
-            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetTestSupport"]
+            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority", "BeakrNetTestSupport"]
         )
     ]
 )

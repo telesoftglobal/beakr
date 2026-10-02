@@ -31,3 +31,11 @@ public struct TransportID: RawRepresentable, Codable, Hashable, Sendable {
         self.rawValue = rawValue
     }
 }
+
+public struct AuthorityID: RawRepresentable, Codable, Hashable, Sendable {
+    public let rawValue: UUID
+
+    public init(rawValue: UUID) {
+        self.rawValue = rawValue
+    }
+}

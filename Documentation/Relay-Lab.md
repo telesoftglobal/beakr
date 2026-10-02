@@ -10,6 +10,7 @@ The relay lab proves that separate processes can register stable node identifier
 - JSON-encoded development wire messages
 - P-256 challenge-response authentication
 - Node IDs derived from public keys
+- Authority-signed node credentials with environment and expiry enforcement
 - One active connection per authenticated Node ID
 - In-memory queuing when a destination is disconnected
 - Source Node ID checked against the connection registration

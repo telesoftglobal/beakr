@@ -2,16 +2,20 @@ import Foundation
 import Testing
 @testable import BeakrNetCore
 import BeakrNetSecurity
+import BeakrNetAuthority
 
 @Suite("Relay wire protocol")
 struct RelayWireProtocolTests {
     @Test("A registration frame round trips")
     func registrationRoundTrip() throws {
         let identity = NodeIdentity()
-        let message = RelayWireMessage.clientHello(
+        let credential = try CredentialAuthority().issue(
             nodeID: identity.nodeID,
-            publicKey: identity.publicKeyRepresentation
+            nodePublicKey: identity.publicKeyRepresentation,
+            environment: "test",
+            validity: 60
         )
+        let message = RelayWireMessage.clientHello(credential: credential)
         let frame = try RelayWireCodec.encode(message)
         let header = frame.prefix(4)
         let body = frame.dropFirst(4)

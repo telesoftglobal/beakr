@@ -26,11 +26,11 @@ Run the deterministic transport-handoff experiment with:
 swift run BeakrNetHandoffLab
 ```
 
-Create a development TLS pre-shared key, then run the localhost relay:
+Create a development TLS key and credential authority:
 
 ```sh
 swift run BeakrNetNodeCLI psk /tmp/beakrnet-relay.psk
-swift run BeakrNetRelayServer 7878 /tmp/beakrnet-relay.psk
+swift run BeakrNetCredentialTool create-authority /tmp/beakrnet-authority.key /tmp/beakrnet-authority.pub
 ```
 
 Create two development identities and note the receiver's printed Node ID:
@@ -38,8 +38,11 @@ Create two development identities and note the receiver's printed Node ID:
 ```sh
 swift run BeakrNetNodeCLI identity /tmp/beakrnet-node-a.key
 swift run BeakrNetNodeCLI identity /tmp/beakrnet-node-b.key
-swift run BeakrNetNodeCLI receive /tmp/beakrnet-node-b.key 10 /tmp/beakrnet-relay.psk
-swift run BeakrNetNodeCLI send /tmp/beakrnet-node-a.key 10 <node-b-uuid> /tmp/beakrnet-relay.psk
+swift run BeakrNetCredentialTool issue /tmp/beakrnet-authority.key /tmp/beakrnet-node-a.key /tmp/beakrnet-node-a.credential development ping 86400
+swift run BeakrNetCredentialTool issue /tmp/beakrnet-authority.key /tmp/beakrnet-node-b.key /tmp/beakrnet-node-b.credential development ping 86400
+swift run BeakrNetRelayServer 7878 /tmp/beakrnet-relay.psk /tmp/beakrnet-authority.pub development
+swift run BeakrNetNodeCLI receive /tmp/beakrnet-node-b.key 10 /tmp/beakrnet-relay.psk /tmp/beakrnet-node-b.credential
+swift run BeakrNetNodeCLI send /tmp/beakrnet-node-a.key 10 <node-b-uuid> /tmp/beakrnet-relay.psk /tmp/beakrnet-node-a.credential
 ```
 
 The relay uses TLS with a development PSK and separately authenticates possession of a self-sovereign node identity. It does not yet use authority-issued credentials and must not be exposed as a production service.

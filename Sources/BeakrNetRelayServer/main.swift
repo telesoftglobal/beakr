@@ -2,14 +2,15 @@ import Foundation
 import Network
 import BeakrNetCore
 import BeakrNetSecurity
+import BeakrNetAuthority
 
 @main
 struct BeakrNetRelayServerMain {
     static func main() async throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
-        guard arguments.count == 2,
+        guard arguments.count == 4,
               let portValue = UInt16(arguments[0]) else {
-            print("Usage: BeakrNetRelayServer <port> <psk-file>")
+            print("Usage: BeakrNetRelayServer <port> <psk-file> <authority-public-key> <environment>")
             return
         }
         guard let port = NWEndpoint.Port(rawValue: portValue) else {
@@ -18,8 +19,16 @@ struct BeakrNetRelayServerMain {
         let preSharedKey = try RelayTLSConfiguration.loadPreSharedKey(
             from: URL(fileURLWithPath: arguments[1])
         )
+        let authorityPublicKey = try Data(
+            contentsOf: URL(fileURLWithPath: arguments[2])
+        )
 
-        let server = try RelayServer(port: port, preSharedKey: preSharedKey)
+        let server = try RelayServer(
+            port: port,
+            preSharedKey: preSharedKey,
+            authorityPublicKey: authorityPublicKey,
+            environment: arguments[3]
+        )
         try await server.run()
     }
 }
@@ -27,13 +36,22 @@ struct BeakrNetRelayServerMain {
 private actor RelayServer {
     private let listener: NWListener
     private let port: NWEndpoint.Port
+    private let authorityPublicKey: Data
+    private let environment: String
     private var connections: [NodeID: NWConnection] = [:]
     private var nodeIDsByConnection: [ObjectIdentifier: NodeID] = [:]
     private var pendingMessages: [NodeID: [RelayWireMessage]] = [:]
     private var authenticationAttempts: [ObjectIdentifier: AuthenticationAttempt] = [:]
 
-    init(port: NWEndpoint.Port, preSharedKey: Data) throws {
+    init(
+        port: NWEndpoint.Port,
+        preSharedKey: Data,
+        authorityPublicKey: Data,
+        environment: String
+    ) throws {
         self.port = port
+        self.authorityPublicKey = authorityPublicKey
+        self.environment = environment
         let parameters = try RelayTLSConfiguration.parameters(preSharedKey: preSharedKey)
         parameters.requiredLocalEndpoint = .hostPort(
             host: NWEndpoint.Host("127.0.0.1"),
@@ -78,11 +96,19 @@ private actor RelayServer {
 
     private func handle(_ message: RelayWireMessage, from connection: NWConnection) async throws {
         switch message {
-        case .clientHello(let nodeID, let publicKey):
-            guard NodeIdentity.nodeID(forPublicKeyRepresentation: publicKey) == nodeID else {
+        case .clientHello(let credential):
+            do {
+                try CredentialVerifier.verify(
+                    credential,
+                    trustedAuthorityPublicKey: authorityPublicKey,
+                    environment: environment
+                )
+            } catch {
                 try await NetworkConnectionIO.send(.registrationRejected, over: connection)
-                throw RelayServerError.nodeIdentityMismatch
+                throw RelayServerError.invalidCredential
             }
+            let nodeID = credential.claims.nodeID
+            let publicKey = credential.claims.nodePublicKey
             let challenge = secureRandomData(count: 32)
             authenticationAttempts[ObjectIdentifier(connection)] = AuthenticationAttempt(
                 nodeID: nodeID,
@@ -160,7 +186,7 @@ private func secureRandomData(count: Int) -> Data {
 
 private enum RelayServerError: Error {
     case invalidPort(UInt16)
-    case nodeIdentityMismatch
+    case invalidCredential
     case invalidRegistrationProof
     case unexpectedClientMessage
     case sourceIdentityMismatch

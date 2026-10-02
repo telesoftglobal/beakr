@@ -25,3 +25,11 @@ Development private keys are stored as mode-0600 files by the CLI. Production Ap
 The localhost relay uses TLS 1.2 PSK with AES-128-GCM and a 32–64 byte pre-shared key supplied from a mode-0600 development file. The TLS PSK protects confidentiality and authenticates membership in the development relay environment. The subsequent P-256 challenge-response authenticates the stable Node ID.
 
 The PSK is not a production credential: every holder shares the same secret, individual holders cannot be revoked, and compromise affects the entire environment. A deployed relay should replace it with a conventional publicly trusted server certificate while retaining node-level credentials above TLS.
+
+## Development credential authority
+
+An independent P-256 authority signs versioned node credentials. Signed claims bind the credential ID, issuer, Node ID, node public key, environment, validity window, and sorted service scopes. The relay trusts an explicit authority public key and rejects credentials from other issuers, expired credentials, credentials for another environment, modified claims, and credentials whose key does not derive the claimed Node ID.
+
+Credential signing uses an explicit length-prefixed binary transcript rather than serialized JSON bytes. JSON is only the file and wire representation. This avoids depending on encoder key order for signature verification.
+
+The development authority uses mode-0600 key files. It is not yet an online enrollment service and has no revocation mechanism.

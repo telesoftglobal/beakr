@@ -1,7 +1,7 @@
 import Foundation
 
 public enum RelayWireMessage: Codable, Equatable, Sendable {
-    case clientHello(nodeID: NodeID, publicKey: Data)
+    case clientHello(credential: NodeCredential)
     case serverChallenge(Data)
     case clientProof(Data)
     case registrationAccepted(nodeID: NodeID)

@@ -2,6 +2,7 @@ import Foundation
 import Network
 import BeakrNetCore
 import BeakrNetSecurity
+import BeakrNetAuthority
 
 @main
 struct BeakrNetNodeCLI {
@@ -30,7 +31,7 @@ struct BeakrNetNodeCLI {
             return
         }
 
-        guard arguments.count >= 4,
+        guard arguments.count >= 5,
               let count = Int(arguments[2]),
               count > 0 else {
             printUsage()
@@ -39,20 +40,24 @@ struct BeakrNetNodeCLI {
 
         let peerUUID = mode == .send ? UUID(uuidString: arguments[3]) : nil
         let preSharedKeyPath: String
+        let credentialPath: String
         let portArgument: String?
         switch mode {
         case .receive:
             preSharedKeyPath = arguments[3]
-            portArgument = arguments.count > 4 ? arguments[4] : nil
+            credentialPath = arguments[4]
+            portArgument = arguments.count > 5 ? arguments[5] : nil
         case .send:
-            guard arguments.count >= 5 else {
+            guard arguments.count >= 6 else {
                 printUsage()
                 return
             }
             preSharedKeyPath = arguments[4]
-            portArgument = arguments.count > 5 ? arguments[5] : nil
+            credentialPath = arguments[5]
+            portArgument = arguments.count > 6 ? arguments[6] : nil
         case .identity, .psk:
             preSharedKeyPath = ""
+            credentialPath = ""
             portArgument = nil
         }
         let portValue: UInt16
@@ -69,6 +74,13 @@ struct BeakrNetNodeCLI {
         }
 
         let nodeID = identity.nodeID
+        let credential = try CredentialFiles.loadCredential(
+            from: URL(fileURLWithPath: credentialPath)
+        )
+        guard credential.claims.nodeID == identity.nodeID,
+              credential.claims.nodePublicKey == identity.publicKeyRepresentation else {
+            throw NodeCLIError.credentialIdentityMismatch
+        }
         let preSharedKey = try RelayTLSConfiguration.loadPreSharedKey(
             from: URL(fileURLWithPath: preSharedKeyPath)
         )
@@ -80,7 +92,11 @@ struct BeakrNetNodeCLI {
         )
         try await start(connection)
         defer { connection.cancel() }
-        try await authenticate(identity: identity, over: connection)
+        try await authenticate(
+            identity: identity,
+            credential: credential,
+            over: connection
+        )
 
         switch mode {
         case .identity, .psk:
@@ -103,13 +119,11 @@ struct BeakrNetNodeCLI {
 
     private static func authenticate(
         identity: NodeIdentity,
+        credential: NodeCredential,
         over connection: NWConnection
     ) async throws {
         try await NetworkConnectionIO.send(
-            .clientHello(
-                nodeID: identity.nodeID,
-                publicKey: identity.publicKeyRepresentation
-            ),
+            .clientHello(credential: credential),
             over: connection
         )
         guard case .serverChallenge(let challenge) = try await NetworkConnectionIO.receive(
@@ -199,8 +213,8 @@ struct BeakrNetNodeCLI {
         print("Usage:")
         print("  BeakrNetNodeCLI identity <identity-file>")
         print("  BeakrNetNodeCLI psk <psk-file>")
-        print("  BeakrNetNodeCLI receive <identity-file> <count> <psk-file> [port]")
-        print("  BeakrNetNodeCLI send <identity-file> <count> <peer-node-uuid> <psk-file> [port]")
+        print("  BeakrNetNodeCLI receive <identity-file> <count> <psk-file> <credential> [port]")
+        print("  BeakrNetNodeCLI send <identity-file> <count> <peer-node-uuid> <psk-file> <credential> [port]")
     }
 }
 
@@ -214,6 +228,7 @@ private enum Mode: String {
 private enum NodeCLIError: Error {
     case invalidPort
     case authenticationFailed
+    case credentialIdentityMismatch
     case connectionCancelled
     case unexpectedSequence([UInt64])
 }
