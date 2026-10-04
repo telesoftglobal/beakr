@@ -66,6 +66,28 @@ public struct BlackboardSpaceSnapshot: Codable, Equatable, Sendable {
     public let frontier: BlackboardFrontier
     public let records: [BlackboardRecord]
     public let journalOffset: UInt64
+
+    public init(
+        version: UInt16 = Self.currentVersion,
+        spaceID: BlackboardSpaceID,
+        name: String,
+        membershipRevision: UInt64,
+        members: [BlackboardMember],
+        compactionGeneration: UInt64,
+        frontier: BlackboardFrontier,
+        records: [BlackboardRecord],
+        journalOffset: UInt64
+    ) {
+        self.version = version
+        self.spaceID = spaceID
+        self.name = name
+        self.membershipRevision = membershipRevision
+        self.members = members
+        self.compactionGeneration = compactionGeneration
+        self.frontier = frontier
+        self.records = records
+        self.journalOffset = journalOffset
+    }
 }
 
 public struct BlackboardIncrementalResult: Equatable, Sendable {
