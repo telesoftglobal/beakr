@@ -6,6 +6,10 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		361F60EE3072073600B9ECA3 /* BeakrNetHost in Frameworks */ = {isa = PBXBuildFile; productRef = 361F60ED3072073600B9ECA3 /* BeakrNetHost */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		36FE2D6A3070DBED005E9350 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -72,6 +76,7 @@
 		36FE2D593070DBEC005E9350 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				361F60EE3072073600B9ECA3 /* BeakrNetHost in Frameworks */,
 			);
 		};
 		36FE2D663070DBED005E9350 /* Frameworks */ = {
@@ -124,6 +129,9 @@
 				36FE2D5E3070DBEC005E9350 /* Beakr */,
 			);
 			name = Beakr;
+			packageProductDependencies = (
+				361F60ED3072073600B9ECA3 /* BeakrNetHost */,
+			);
 			productName = Beakr;
 			productReference = 36FE2D5C3070DBEC005E9350 /* Beakr.app */;
 			productType = "com.apple.product-type.application";
@@ -200,6 +208,9 @@
 			);
 			mainGroup = 36FE2D533070DBEC005E9350;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				361F60EC3072073600B9ECA3 /* XCLocalSwiftPackageReference "../Packages/BeakrNet" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 36FE2D5D3070DBEC005E9350 /* Products */;
 			projectDirPath = "";
@@ -604,6 +615,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		361F60EC3072073600B9ECA3 /* XCLocalSwiftPackageReference "../Packages/BeakrNet" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../Packages/BeakrNet;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		361F60ED3072073600B9ECA3 /* BeakrNetHost */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = BeakrNetHost;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 36FE2D543070DBEC005E9350 /* Project object */;
 	validationLevel = 1;
