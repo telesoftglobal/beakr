@@ -32,4 +32,18 @@ struct HostPersistenceTests {
         let text = String(decoding: first, as: UTF8.self)
         #expect(!text.contains("path")); #expect(!text.contains("payload")); #expect(!text.contains("credential"))
     }
+
+    @Test("Corrupt or future checkpoints fail closed")
+    func invalidCheckpoint() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("host.json")
+        try Data("not-json".utf8).write(to: url)
+        #expect(throws: (any Error).self) { try FileHostCheckpointStore.open(fileURL: url) }
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .millisecondsSince1970
+        try encoder.encode(HostCheckpoint(formatVersion: 99, generation: 1, lifecycle: .stopped,
+                                          checkpointedAt: Date(timeIntervalSince1970: 1_000), cleanShutdown: true)).write(to: url)
+        #expect(throws: HostCheckpointError.unsupportedFormat(99)) { try FileHostCheckpointStore.open(fileURL: url) }
+    }
 }

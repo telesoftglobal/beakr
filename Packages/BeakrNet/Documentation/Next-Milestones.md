@@ -135,6 +135,8 @@ Exit criteria include interruption and restart recovery, corrupt- and duplicate-
 
 ## Milestone 10: Host API, storage, and lifecycle integration
 
+**Status: Complete.** Implemented by `BeakrNetHost` with application-facing service contracts, ordered durable recovery, lifecycle and permission degradation, storage-pressure admission, trust maintenance, synchronization state, atomic checkpoints, and privacy-safe diagnostics.
+
 Expose supported application concepts rather than requiring applications to construct envelopes. Define repository protocols and host coordinators for messages, Blackboard state, transfer staging, pending work, credentials, and diagnostics. Add foreground/background lifecycle hooks, visible synchronization state, and privacy-safe diagnostic export.
 
 Apple background execution and notifications are hints and bounded opportunities, not guaranteed delivery. APNs must trigger a refresh; it must not carry authoritative Blackboard state. UI work should consume these APIs but remain outside BeakrNetCore.

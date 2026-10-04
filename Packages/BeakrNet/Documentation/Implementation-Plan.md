@@ -297,7 +297,7 @@ Exit requires interruption and restart recovery, corrupt and duplicate chunk rej
 
 ## Milestone 10: Host API, storage, and lifecycle integration
 
-**Status: In progress; design gate complete.** [Host API, Storage, and Lifecycle Design](Host-Integration-Design.md) defines application-facing services, repository authority, recovery ordering, lifecycle and background leases, lock handling, permission degradation, storage pressure, credential/revocation coordination, visible synchronization state, and privacy-safe diagnostic export. UI consumes this layer but remains outside BeakrNetCore.
+**Status: Complete.** [Host API, Storage, and Lifecycle Design](Host-Integration-Design.md) defines application-facing services, repository authority, recovery ordering, lifecycle and background leases, lock handling, permission degradation, storage pressure, credential/revocation coordination, visible synchronization state, and privacy-safe diagnostic export. `BeakrNetHost` implements these platform-neutral boundaries, atomic monotonic checkpoints, ordered composite recovery, trust maintenance before route activation, and bounded canonical diagnostics. UI and Apple lifecycle adapters remain outside BeakrNetCore.
 
 ## Milestone 11: Production operations
 
