@@ -277,7 +277,9 @@ The implementation uses sorted-key canonical JSON and rejects noncanonical input
 
 ## Milestone 7: Application Data protocol
 
-**Status: Planned.** Add bounded typed messages and request/response above raw envelopes, with namespaced operation versions, correlation, deadlines, cancellation, application errors, authorization, mutation idempotency, durable outgoing node queues, and durable incoming deduplication. Chunked files and live media are deferred.
+**Status: In progress.** The first slice adds the platform-neutral `BeakrNetData` target and independently versioned canonical schemas for bounded message, request, response, cancellation, and application-error traffic. Namespaced operation versions, correlation IDs, mutation idempotency keys, deadlines, strict metadata rules, authorization-before-dispatch, supported-operation gating, replay bounds, response-size bounds, privacy-safe diagnostics, and isolated handlers are covered by deterministic tests. `BeakrNetData` depends only on `BeakrNetCore` and `BeakrNetControl`; product operations remain above it.
+
+The remaining closure work is durable outgoing node queues, restart-safe incoming deduplication and idempotency results, explicit cancellation state, and end-to-end unchanged request retry across relay/LAN handoff. Chunked files and live media remain deferred.
 
 Exit requires a request to retry unchanged across relay/LAN handoff while producing one application mutation and one correlated response. Restart must preserve pending delivery and deduplication, unsupported operations must not reach handlers, and sustained Data traffic must not starve Control.
 

@@ -12,6 +12,7 @@ let package = Package(
     products: [
         .library(name: "BeakrNetCore", targets: ["BeakrNetCore"]),
         .library(name: "BeakrNetControl", targets: ["BeakrNetControl"]),
+        .library(name: "BeakrNetData", targets: ["BeakrNetData"]),
         .library(name: "BeakrNetSecurity", targets: ["BeakrNetSecurity"]),
         .library(name: "BeakrNetAuthority", targets: ["BeakrNetAuthority"]),
         .library(name: "BeakrNetRelayTransport", targets: ["BeakrNetRelayTransport"]),
@@ -26,6 +27,10 @@ let package = Package(
         .target(
             name: "BeakrNetControl",
             dependencies: ["BeakrNetCore"]
+        ),
+        .target(
+            name: "BeakrNetData",
+            dependencies: ["BeakrNetCore", "BeakrNetControl"]
         ),
         .target(
             name: "BeakrNetSecurity",
@@ -66,6 +71,10 @@ let package = Package(
         .testTarget(
             name: "BeakrNetControlTests",
             dependencies: ["BeakrNetControl", "BeakrNetCore", "BeakrNetTestSupport"]
+        ),
+        .testTarget(
+            name: "BeakrNetDataTests",
+            dependencies: ["BeakrNetData", "BeakrNetControl", "BeakrNetCore", "BeakrNetTestSupport"]
         ),
         .testTarget(
             name: "BeakrNetAppleIntegrationTests",

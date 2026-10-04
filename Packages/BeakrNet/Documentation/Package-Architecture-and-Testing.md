@@ -59,9 +59,11 @@ The new target protects the stable networking foundation from application-protoc
 
 Changes to `BeakrNetCore` during application milestones require an explicit justification. A convenience requested by an application protocol is not, by itself, a reason to weaken envelope validation, authentication, revocation freshness, resource bounds, or route eligibility.
 
-## Later module decisions
+## Application Data module
 
-Milestone 7 may introduce a generic `BeakrNetData` target if its message, request/response, cancellation, correlation, and idempotency contracts remain reusable and independent of product schemas. Product-specific operations belong above that target.
+Milestone 7 introduces a generic `BeakrNetData` target because its message, request/response, cancellation, correlation, and idempotency contracts are reusable and independent of product schemas. `BeakrNetData` depends on `BeakrNetControl` and `BeakrNetCore`. Product-specific operations and application handlers belong above that target.
+
+## Later module decisions
 
 Milestone 8 Blackboard work should begin behind a separate module or Swift package boundary. Repository implementations, schema migration, causal synchronization, compaction, and conflict policy will evolve at a different rate from networking. The design gate must decide whether the reusable portion belongs in this repository as `BeakrBlackboard` or in a separate Swift package before implementation begins.
 
