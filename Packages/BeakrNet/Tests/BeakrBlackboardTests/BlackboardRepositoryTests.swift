@@ -1,0 +1,104 @@
+import Foundation
+import Testing
+import BeakrNetCore
+import BeakrBlackboard
+
+@Suite("Blackboard repository")
+struct BlackboardRepositoryTests {
+    @Test("Concurrent offline writes expose the same deterministic conflict in either order")
+    func offlineConflictConvergence() async throws {
+        let fixture = Fixture()
+        let first = fixture.operation(replica: fixture.replicaA, counter: 1, bytes: "A", operationID: fixture.operationA)
+        let second = fixture.operation(replica: fixture.replicaB, counter: 1, bytes: "B", operationID: fixture.operationB)
+        let left = try await fixture.repository(applying: [first, second])
+        let right = try await fixture.repository(applying: [second, first])
+
+        let leftRecord = try #require(left.records.first)
+        let rightRecord = try #require(right.records.first)
+        #expect(leftRecord.hasConflict)
+        #expect(leftRecord == rightRecord)
+        #expect(left.frontier == right.frontier)
+    }
+
+    @Test("A causally later write supersedes only observed versions")
+    func causalSupersession() async throws {
+        let fixture = Fixture()
+        let repository = try await fixture.repository(applying: [
+            fixture.operation(replica: fixture.replicaA, counter: 1, bytes: "A", operationID: fixture.operationA)
+        ], returnRepository: true)
+        let context = BlackboardFrontier(entries: [.init(replicaID: fixture.replicaA, counter: 1)])
+        let later = fixture.operation(replica: fixture.replicaA, counter: 2, bytes: "new", context: context)
+        _ = try await repository.apply(later, authorizedNodeID: fixture.owner)
+        let snapshot = try await repository.snapshot(spaceID: fixture.space, authorizedNodeID: fixture.owner)
+        #expect(snapshot.records.first?.versions.count == 1)
+        #expect(snapshot.records.first?.versions.first?.value?.bytes == Data("new".utf8))
+    }
+
+    @Test("Unauthorized, missing-dependency, rollback, and cursor mismatch fail closed")
+    func rejectionBoundaries() async throws {
+        let fixture = Fixture()
+        let repository = try await fixture.repository(applying: [], returnRepository: true)
+        let operation = fixture.operation(replica: fixture.replicaA, counter: 1, bytes: "A")
+        await #expect(throws: BlackboardRepositoryError.unauthorized) {
+            try await repository.apply(operation, authorizedNodeID: NodeID())
+        }
+        let missing = fixture.operation(
+            replica: fixture.replicaB, counter: 1, bytes: "B",
+            context: .init(entries: [.init(replicaID: fixture.replicaA, counter: 1)])
+        )
+        await #expect(throws: BlackboardRepositoryError.missingCausalDependency) {
+            try await repository.apply(missing, authorizedNodeID: fixture.owner)
+        }
+        _ = try await repository.apply(operation, authorizedNodeID: fixture.owner)
+        await #expect(throws: BlackboardRepositoryError.causalRollback) {
+            try await repository.apply(fixture.operation(replica: fixture.replicaA, counter: 1, bytes: "other"), authorizedNodeID: fixture.owner)
+        }
+        await #expect(throws: BlackboardRepositoryError.compactionBoundaryMismatch) {
+            try await repository.incremental(
+                spaceID: fixture.space,
+                after: .init(compactionGeneration: 1, journalOffset: 0),
+                limit: 10,
+                authorizedNodeID: fixture.owner
+            )
+        }
+    }
+}
+
+private struct Fixture {
+    let owner = NodeID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!)
+    let space = BlackboardSpaceID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!)
+    let record = BlackboardRecordID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!)
+    let replicaA = BlackboardReplicaID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000004")!)
+    let replicaB = BlackboardReplicaID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000005")!)
+    let operationA = BlackboardOperationID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000006")!)
+    let operationB = BlackboardOperationID(rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000007")!)
+    let now = Date(timeIntervalSince1970: 1_000)
+
+    func operation(
+        replica: BlackboardReplicaID,
+        counter: UInt64,
+        bytes: String,
+        context: BlackboardFrontier = BlackboardFrontier(),
+        operationID: BlackboardOperationID = BlackboardOperationID()
+    ) -> BlackboardOperation {
+        BlackboardOperation(
+            operationID: operationID, spaceID: space, recordID: record,
+            dot: .init(replicaID: replica, counter: counter), context: context,
+            kind: .write,
+            value: .init(schema: "com.example.note", schemaVersion: 1, bytes: Data(bytes.utf8)),
+            authoredAt: now
+        )
+    }
+
+    func repository(applying operations: [BlackboardOperation]) async throws -> BlackboardSpaceSnapshot {
+        let repository = try await repository(applying: operations, returnRepository: true)
+        return try await repository.snapshot(spaceID: space, authorizedNodeID: owner)
+    }
+
+    func repository(applying operations: [BlackboardOperation], returnRepository: Bool) async throws -> BlackboardRepository {
+        let repository = BlackboardRepository()
+        try await repository.createSpace(id: space, name: "Notes", owner: owner)
+        for operation in operations { _ = try await repository.apply(operation, authorizedNodeID: owner) }
+        return repository
+    }
+}

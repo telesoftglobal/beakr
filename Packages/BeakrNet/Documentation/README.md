@@ -55,4 +55,4 @@ swift run BeakrNetNodeCLI send /tmp/beakrnet-node-a.key 10 <node-b-uuid> /tmp/be
 
 The relay command-line lab uses TLS with a development PSK and separately authenticates authority-issued node credentials and possession of the node identity. The shared development PSK, command-line authority material, and laboratory server are not a production deployment configuration.
 
-See [Implementation Plan](Implementation-Plan.md) for completed work, [Next Milestones](Next-Milestones.md) for the ordered roadmap, and [Package Architecture and Testing](Package-Architecture-and-Testing.md) for dependency and validation boundaries.
+See [Implementation Plan](Implementation-Plan.md) for completed work, [Next Milestones](Next-Milestones.md) for the ordered roadmap, [Package Architecture and Testing](Package-Architecture-and-Testing.md) for dependency and validation boundaries, and [Blackboard Replication Design](Blackboard-Replication-Design.md) for the Milestone 8 replication contract.

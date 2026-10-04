@@ -1,0 +1,264 @@
+import Foundation
+import BeakrNetCore
+
+public struct BlackboardPolicy: Equatable, Sendable {
+    public let maximumSpaces: Int
+    public let maximumMembersPerSpace: Int
+    public let maximumRecordsPerSpace: Int
+    public let maximumVersionsPerRecord: Int
+    public let maximumJournalOperations: Int
+    public let maximumValueBytes: Int
+    public let maximumAttachmentsPerValue: Int
+    public let maximumSubscriptions: Int
+
+    public init(
+        maximumSpaces: Int = 64,
+        maximumMembersPerSpace: Int = 256,
+        maximumRecordsPerSpace: Int = 10_000,
+        maximumVersionsPerRecord: Int = 16,
+        maximumJournalOperations: Int = 100_000,
+        maximumValueBytes: Int = 256 * 1_024,
+        maximumAttachmentsPerValue: Int = 32,
+        maximumSubscriptions: Int = 1_024
+    ) {
+        precondition([maximumSpaces, maximumMembersPerSpace, maximumRecordsPerSpace,
+                      maximumVersionsPerRecord, maximumJournalOperations, maximumValueBytes,
+                      maximumAttachmentsPerValue, maximumSubscriptions].allSatisfy { $0 > 0 })
+        self.maximumSpaces = maximumSpaces
+        self.maximumMembersPerSpace = maximumMembersPerSpace
+        self.maximumRecordsPerSpace = maximumRecordsPerSpace
+        self.maximumVersionsPerRecord = maximumVersionsPerRecord
+        self.maximumJournalOperations = maximumJournalOperations
+        self.maximumValueBytes = maximumValueBytes
+        self.maximumAttachmentsPerValue = maximumAttachmentsPerValue
+        self.maximumSubscriptions = maximumSubscriptions
+    }
+}
+
+public enum BlackboardRepositoryError: Error, Equatable, Sendable {
+    case unknownSpace
+    case unauthorized
+    case invalidName
+    case invalidOperation
+    case unsupportedVersion(UInt16)
+    case duplicateOperation
+    case missingCausalDependency
+    case causalRollback
+    case conflictResolutionMismatch
+    case membershipRollback
+    case resourceLimit
+    case compactionBoundaryMismatch
+}
+
+public enum BlackboardApplyResult: Equatable, Sendable {
+    case applied(record: BlackboardRecord, cursor: BlackboardCursor)
+    case duplicate
+}
+
+public struct BlackboardSpaceSnapshot: Codable, Equatable, Sendable {
+    public static let currentVersion: UInt16 = 1
+    public let version: UInt16
+    public let spaceID: BlackboardSpaceID
+    public let name: String
+    public let membershipRevision: UInt64
+    public let members: [BlackboardMember]
+    public let compactionGeneration: UInt64
+    public let frontier: BlackboardFrontier
+    public let records: [BlackboardRecord]
+    public let journalOffset: UInt64
+}
+
+public struct BlackboardIncrementalResult: Equatable, Sendable {
+    public let operations: [BlackboardOperation]
+    public let cursor: BlackboardCursor
+}
+
+public struct BlackboardChange: Equatable, Sendable {
+    public let spaceID: BlackboardSpaceID
+    public let recordID: BlackboardRecordID
+    public let operationID: BlackboardOperationID
+    public let cursor: BlackboardCursor
+}
+
+public actor BlackboardRepository {
+    public typealias Subscriber = @Sendable (BlackboardChange) -> Void
+
+    private struct SpaceState: Sendable {
+        var name: String
+        var membershipRevision: UInt64
+        var members: [NodeID: BlackboardMemberRole]
+        var compactionGeneration: UInt64 = 0
+        var frontier = BlackboardFrontier()
+        var records: [BlackboardRecordID: [BlackboardRecordVersion]] = [:]
+        var journal: [BlackboardOperation] = []
+        var operationIDs: Set<BlackboardOperationID> = []
+    }
+
+    private struct Subscription: Sendable {
+        let spaceID: BlackboardSpaceID
+        let callback: Subscriber
+    }
+
+    public let policy: BlackboardPolicy
+    private var spaces: [BlackboardSpaceID: SpaceState] = [:]
+    private var subscriptions: [BlackboardSubscriptionID: Subscription] = [:]
+
+    public init(policy: BlackboardPolicy = BlackboardPolicy()) { self.policy = policy }
+
+    public func createSpace(id: BlackboardSpaceID = BlackboardSpaceID(), name: String, owner: NodeID) throws {
+        guard !name.isEmpty, name.utf8.count <= 128 else { throw BlackboardRepositoryError.invalidName }
+        guard spaces[id] == nil, spaces.count < policy.maximumSpaces else { throw BlackboardRepositoryError.resourceLimit }
+        spaces[id] = SpaceState(name: name, membershipRevision: 1, members: [owner: .owner])
+    }
+
+    public func updateMembers(
+        spaceID: BlackboardSpaceID,
+        revision: UInt64,
+        members: [BlackboardMember],
+        authorizedNodeID: NodeID
+    ) throws {
+        guard var space = spaces[spaceID] else { throw BlackboardRepositoryError.unknownSpace }
+        guard space.members[authorizedNodeID] == .owner else { throw BlackboardRepositoryError.unauthorized }
+        guard revision > space.membershipRevision else { throw BlackboardRepositoryError.membershipRollback }
+        guard !members.isEmpty, members.count <= policy.maximumMembersPerSpace else { throw BlackboardRepositoryError.resourceLimit }
+        let mapped = Dictionary(uniqueKeysWithValues: members.map { ($0.nodeID, $0.role) })
+        guard mapped.count == members.count, mapped.values.contains(.owner) else { throw BlackboardRepositoryError.invalidOperation }
+        space.membershipRevision = revision
+        space.members = mapped
+        spaces[spaceID] = space
+    }
+
+    public func apply(_ operation: BlackboardOperation, authorizedNodeID: NodeID) throws -> BlackboardApplyResult {
+        guard var space = spaces[operation.spaceID] else { throw BlackboardRepositoryError.unknownSpace }
+        guard let role = space.members[authorizedNodeID], role >= .writer else { throw BlackboardRepositoryError.unauthorized }
+        if space.operationIDs.contains(operation.operationID) { return .duplicate }
+        try validate(operation, in: space)
+
+        var versions = space.records[operation.recordID] ?? []
+        if versions.isEmpty, space.records.count >= policy.maximumRecordsPerSpace {
+            throw BlackboardRepositoryError.resourceLimit
+        }
+        if operation.kind == .resolve {
+            guard Set(operation.resolves) == Set(versions.map(\.operationID)), versions.count > 1,
+                  versions.allSatisfy({ operation.context.observes($0.dot) }) else {
+                throw BlackboardRepositoryError.conflictResolutionMismatch
+            }
+        }
+        versions.removeAll { operation.context.observes($0.dot) }
+        versions.append(BlackboardRecordVersion(
+            operationID: operation.operationID,
+            dot: operation.dot,
+            context: operation.context,
+            value: operation.value,
+            authoredAt: operation.authoredAt
+        ))
+        versions.sort { $0.operationID < $1.operationID }
+        guard versions.count <= policy.maximumVersionsPerRecord else { throw BlackboardRepositoryError.resourceLimit }
+        guard space.journal.count < policy.maximumJournalOperations else { throw BlackboardRepositoryError.resourceLimit }
+
+        space.records[operation.recordID] = versions
+        space.frontier = space.frontier.advancing(operation.dot)
+        space.journal.append(operation)
+        space.operationIDs.insert(operation.operationID)
+        spaces[operation.spaceID] = space
+        let cursor = BlackboardCursor(compactionGeneration: space.compactionGeneration, journalOffset: UInt64(space.journal.count))
+        let record = BlackboardRecord(recordID: operation.recordID, versions: versions)
+        notify(.init(spaceID: operation.spaceID, recordID: operation.recordID, operationID: operation.operationID, cursor: cursor))
+        return .applied(record: record, cursor: cursor)
+    }
+
+    public func snapshot(spaceID: BlackboardSpaceID, authorizedNodeID: NodeID) throws -> BlackboardSpaceSnapshot {
+        let space = try readableSpace(spaceID, nodeID: authorizedNodeID)
+        return BlackboardSpaceSnapshot(
+            version: BlackboardSpaceSnapshot.currentVersion,
+            spaceID: spaceID,
+            name: space.name,
+            membershipRevision: space.membershipRevision,
+            members: space.members.map { BlackboardMember(nodeID: $0.key, role: $0.value) }
+                .sorted { $0.nodeID.rawValue.uuidString < $1.nodeID.rawValue.uuidString },
+            compactionGeneration: space.compactionGeneration,
+            frontier: space.frontier,
+            records: space.records.map { BlackboardRecord(recordID: $0.key, versions: $0.value) }
+                .sorted { $0.recordID < $1.recordID },
+            journalOffset: UInt64(space.journal.count)
+        )
+    }
+
+    public func incremental(
+        spaceID: BlackboardSpaceID,
+        after cursor: BlackboardCursor,
+        limit: Int,
+        authorizedNodeID: NodeID
+    ) throws -> BlackboardIncrementalResult {
+        let space = try readableSpace(spaceID, nodeID: authorizedNodeID)
+        guard cursor.compactionGeneration == space.compactionGeneration,
+              cursor.journalOffset <= UInt64(space.journal.count), limit > 0 else {
+            throw BlackboardRepositoryError.compactionBoundaryMismatch
+        }
+        let end = min(space.journal.count, Int(cursor.journalOffset) + limit)
+        let operations = Array(space.journal[Int(cursor.journalOffset)..<end])
+        return BlackboardIncrementalResult(
+            operations: operations,
+            cursor: BlackboardCursor(compactionGeneration: space.compactionGeneration, journalOffset: UInt64(end))
+        )
+    }
+
+    public func subscribe(
+        id: BlackboardSubscriptionID = BlackboardSubscriptionID(),
+        spaceID: BlackboardSpaceID,
+        authorizedNodeID: NodeID,
+        callback: @escaping Subscriber
+    ) throws -> BlackboardSubscriptionID {
+        _ = try readableSpace(spaceID, nodeID: authorizedNodeID)
+        guard subscriptions.count < policy.maximumSubscriptions else { throw BlackboardRepositoryError.resourceLimit }
+        subscriptions[id] = Subscription(spaceID: spaceID, callback: callback)
+        return id
+    }
+
+    public func cancelSubscription(_ id: BlackboardSubscriptionID) { subscriptions.removeValue(forKey: id) }
+
+    private func readableSpace(_ id: BlackboardSpaceID, nodeID: NodeID) throws -> SpaceState {
+        guard let space = spaces[id] else { throw BlackboardRepositoryError.unknownSpace }
+        guard space.members[nodeID] != nil else { throw BlackboardRepositoryError.unauthorized }
+        return space
+    }
+
+    private func validate(_ operation: BlackboardOperation, in space: SpaceState) throws {
+        guard operation.version == BlackboardOperation.currentVersion else {
+            throw BlackboardRepositoryError.unsupportedVersion(operation.version)
+        }
+        guard operation.dot.counter > 0,
+              operation.context.entries == operation.context.entries.sorted(by: { $0.replicaID < $1.replicaID }),
+              Set(operation.context.entries.map(\.replicaID)).count == operation.context.entries.count,
+              operation.resolves == operation.resolves.sorted(),
+              Set(operation.resolves).count == operation.resolves.count else {
+            throw BlackboardRepositoryError.invalidOperation
+        }
+        guard space.frontier.dominates(operation.context) else { throw BlackboardRepositoryError.missingCausalDependency }
+        guard operation.dot.counter == space.frontier.counter(for: operation.dot.replicaID) + 1 else {
+            throw BlackboardRepositoryError.causalRollback
+        }
+        switch operation.kind {
+        case .write:
+            guard operation.value != nil, operation.resolves.isEmpty else { throw BlackboardRepositoryError.invalidOperation }
+        case .delete:
+            guard operation.value == nil, operation.resolves.isEmpty else { throw BlackboardRepositoryError.invalidOperation }
+        case .resolve:
+            guard !operation.resolves.isEmpty else { throw BlackboardRepositoryError.invalidOperation }
+        }
+        if let value = operation.value {
+            guard !value.schema.isEmpty, value.schema.utf8.count <= 128, value.schemaVersion > 0,
+                  value.bytes.count <= policy.maximumValueBytes,
+                  value.attachments.count <= policy.maximumAttachmentsPerValue,
+                  value.attachments.allSatisfy({ $0.digest.count == 32 }) else {
+                throw BlackboardRepositoryError.resourceLimit
+            }
+        }
+    }
+
+    private func notify(_ change: BlackboardChange) {
+        for subscription in subscriptions.values where subscription.spaceID == change.spaceID {
+            subscription.callback(change)
+        }
+    }
+}

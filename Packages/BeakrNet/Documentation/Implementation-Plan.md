@@ -285,7 +285,7 @@ Exit requires a request to retry unchanged across relay/LAN handoff while produc
 
 ## Milestone 8: Blackboard replication
 
-**Status: Planned with a design gate.** Define space, record, replica, operation, subscription, snapshot, journal, causal, authorization, retention, tombstone, and compaction contracts before implementing a generic repository and synchronization lab. Wall-clock last-write-wins is not an implicit conflict policy; concurrent edits must merge under an approved rule or remain an explicit conflict.
+**Status: In progress; design gate complete.** [Blackboard Replication Design](Blackboard-Replication-Design.md) defines identifiers, an observed-remove multi-value register, vector-frontier causality, explicit conflicts, application-owned resolution, membership roles, canonical snapshots and journals, generation-bound cursors, compaction safety, tombstone retention, attachment references, subscriptions, and resource bounds. Wall-clock time is never a conflict-resolution rule.
 
 Exit requires deterministic offline-edit convergence or identical explicit conflicts regardless of delivery order, restart-safe snapshot/journal recovery, rollback and invalid-causality rejection, authorization enforcement, and synchronization across route handoff without changing operation identity. Attachments are Data-transfer references rather than Blackboard blobs.
 
