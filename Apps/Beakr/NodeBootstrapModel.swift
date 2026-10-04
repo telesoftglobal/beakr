@@ -9,6 +9,8 @@ enum NodeBootstrapState: Equatable {
     case starting
     case needsConfiguration
     case identityReady
+    case enrolling
+    case ready
     case failed
 }
 
@@ -25,6 +27,10 @@ protocol NodeIdentityLoading: Sendable {
 protocol DevelopmentAuthorityConfigurationStoring: Sendable {
     func load() throws -> DevelopmentAuthorityConfiguration?
     func save(_ configuration: DevelopmentAuthorityConfiguration) throws
+}
+
+protocol NodeTrustBootstrapping: Sendable {
+    func enrollAndRecover(using configuration: DevelopmentAuthorityConfiguration) async throws
 }
 
 struct KeychainNodeIdentityLoader: NodeIdentityLoading {
@@ -100,11 +106,76 @@ struct DevelopmentAuthorityConfigurationStore: DevelopmentAuthorityConfiguration
     }
 }
 
+struct DevelopmentNodeTrustBootstrapper: NodeTrustBootstrapping {
+    func enrollAndRecover(using configuration: DevelopmentAuthorityConfiguration) async throws {
+        let identity = try KeychainNodeIdentityStore(service: "net.beakr.app").loadOrCreate()
+        guard identity.nodeID == configuration.credential.claims.nodeID,
+              identity.publicKeyRepresentation == configuration.credential.claims.nodePublicKey else {
+            throw NodeBootstrapError.credentialIdentityMismatch
+        }
+
+        let transport = try URLSessionCertificateEnrollmentTransport(
+            baseURL: configuration.controlPlaneURL
+        )
+        let client = try CertificateEnrollmentNetworkClient(
+            transport: transport,
+            identity: identity,
+            credential: configuration.credential,
+            environment: configuration.credential.claims.environment,
+            requestedValidity: CertificateEnrollmentValidator.maximumCertificateValidity
+        )
+        let exchange = try await client.renewCertificate()
+        try CertificateEnrollmentResponseVerifier.verify(
+            exchange.response,
+            for: exchange.request,
+            trustedAuthorityPublicKey: configuration.authorityPublicKey
+        )
+        try KeychainLANTLSIdentityStore(service: "net.beakr.app").install(
+            response: exchange.response,
+            nodeIdentity: identity
+        )
+
+        let distributor = RevocationSnapshotDistributor(
+            trustedAuthorityPublicKey: configuration.authorityPublicKey
+        )
+        let controller = RevocationRefreshController(
+            distributor: distributor,
+            requester: try RevocationSnapshotNetworkClient(baseURL: configuration.controlPlaneURL),
+            store: FileRevocationSnapshotStore(fileURL: try revocationSnapshotURL()),
+            policy: try RevocationRefreshPolicy()
+        )
+        let restored = try await controller.restorePersistedSnapshot() != nil
+        let outcome = await controller.refreshNow(trigger: .startup)
+        switch outcome {
+        case .activated:
+            return
+        case .unchanged where restored:
+            return
+        case .failed where restored:
+            return
+        case .unchanged, .failed:
+            throw NodeBootstrapError.noTrustedRevocationState
+        }
+    }
+
+    private func revocationSnapshotURL() throws -> URL {
+        let root = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ).appendingPathComponent("Beakr", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root.appendingPathComponent("RevocationSnapshot.json")
+    }
+}
+
 enum NodeBootstrapError: Error {
     case invalidURL
     case invalidAuthorityKey
     case invalidCredential
     case credentialIdentityMismatch
+    case noTrustedRevocationState
     case keychain(OSStatus)
 }
 
@@ -120,21 +191,34 @@ final class NodeBootstrapModel {
 
     private let identityLoader: any NodeIdentityLoading
     private let configurationStore: any DevelopmentAuthorityConfigurationStoring
+    private let trustBootstrapper: any NodeTrustBootstrapping
+    private var activeConfiguration: DevelopmentAuthorityConfiguration?
 
     init() {
         identityLoader = KeychainNodeIdentityLoader()
         configurationStore = DevelopmentAuthorityConfigurationStore()
+        trustBootstrapper = DevelopmentNodeTrustBootstrapper()
     }
 
     init(identityLoader: any NodeIdentityLoading) {
         self.identityLoader = identityLoader
         configurationStore = DevelopmentAuthorityConfigurationStore()
+        trustBootstrapper = DevelopmentNodeTrustBootstrapper()
     }
 
     init(identityLoader: any NodeIdentityLoading,
          configurationStore: any DevelopmentAuthorityConfigurationStoring) {
         self.identityLoader = identityLoader
         self.configurationStore = configurationStore
+        trustBootstrapper = DevelopmentNodeTrustBootstrapper()
+    }
+
+    init(identityLoader: any NodeIdentityLoading,
+         configurationStore: any DevelopmentAuthorityConfigurationStoring,
+         trustBootstrapper: any NodeTrustBootstrapping) {
+        self.identityLoader = identityLoader
+        self.configurationStore = configurationStore
+        self.trustBootstrapper = trustBootstrapper
     }
 
     func start() async {
@@ -147,6 +231,7 @@ final class NodeBootstrapModel {
                 try validate(configuration, nodeID: restoredNodeID)
                 controlPlaneURL = configuration.controlPlaneURL.absoluteString
                 authorityPublicKeyBase64 = configuration.authorityPublicKey.base64EncodedString()
+                activeConfiguration = configuration
                 state = .identityReady
                 statusMessage = "Development authority configuration is verified. Certificate enrollment is next."
             } else {
@@ -171,11 +256,30 @@ final class NodeBootstrapModel {
             try validate(configuration, nodeID: nodeID)
             try configurationStore.save(configuration)
             credentialJSON = ""
+            activeConfiguration = configuration
             state = .identityReady
             statusMessage = "Development authority configuration is verified. Certificate enrollment is next."
         } catch {
             state = .needsConfiguration
             statusMessage = "Configuration rejected. Verify the HTTPS URL, authority key, and node credential."
+        }
+    }
+
+    func enrollAndRecoverTrust() async {
+        guard let activeConfiguration else {
+            state = .needsConfiguration
+            statusMessage = "Verify development authority configuration before enrollment."
+            return
+        }
+        state = .enrolling
+        statusMessage = "Enrolling certificate and recovering revocation state."
+        do {
+            try await trustBootstrapper.enrollAndRecover(using: activeConfiguration)
+            state = .ready
+            statusMessage = "Identity, certificate, and revocation state are ready."
+        } catch {
+            state = .identityReady
+            statusMessage = "Enrollment or revocation recovery failed. Routes remain disabled."
         }
     }
 

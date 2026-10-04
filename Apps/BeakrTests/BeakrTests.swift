@@ -100,6 +100,34 @@ struct BeakrTests {
         #expect(model.state == .identityReady)
         #expect(model.credentialJSON.isEmpty)
     }
+
+    @Test("Certificate and revocation recovery are required before bootstrap is ready")
+    func trustRecovery() async throws {
+        let identity = NodeIdentity()
+        let authority = CredentialAuthority()
+        let credential = try authority.issue(
+            nodeID: identity.nodeID,
+            nodePublicKey: identity.publicKeyRepresentation,
+            environment: "development",
+            validity: 3_600,
+            serviceScopes: ["lan"]
+        )
+        let configuration = DevelopmentAuthorityConfiguration(
+            controlPlaneURL: URL(string: "https://authority.example")!,
+            authorityPublicKey: authority.publicKeyRepresentation,
+            credential: credential
+        )
+        let model = NodeBootstrapModel(
+            identityLoader: FixedIdentityLoader(nodeID: identity.nodeID),
+            configurationStore: FixedAuthorityConfigurationStore(configuration: configuration),
+            trustBootstrapper: SuccessfulTrustBootstrapper()
+        )
+        await model.start()
+
+        await model.enrollAndRecoverTrust()
+
+        #expect(model.state == .ready)
+    }
 }
 
 private actor RecordingMessagingService: HostMessagingService {
@@ -132,4 +160,14 @@ private struct FailingIdentityLoader: NodeIdentityLoading {
 private struct MemoryAuthorityConfigurationStore: DevelopmentAuthorityConfigurationStoring {
     func load() throws -> DevelopmentAuthorityConfiguration? { nil }
     func save(_ configuration: DevelopmentAuthorityConfiguration) throws {}
+}
+
+private struct FixedAuthorityConfigurationStore: DevelopmentAuthorityConfigurationStoring {
+    let configuration: DevelopmentAuthorityConfiguration
+    func load() throws -> DevelopmentAuthorityConfiguration? { configuration }
+    func save(_ configuration: DevelopmentAuthorityConfiguration) throws {}
+}
+
+private struct SuccessfulTrustBootstrapper: NodeTrustBootstrapping {
+    func enrollAndRecover(using configuration: DevelopmentAuthorityConfiguration) async throws {}
 }

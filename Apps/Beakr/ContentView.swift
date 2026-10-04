@@ -36,6 +36,14 @@ struct ContentView: View {
                         save: bootstrap.saveDevelopmentConfiguration
                     )
                 }
+                if bootstrap.state == .identityReady || bootstrap.state == .enrolling {
+                    TrustRecoverySection(
+                        isWorking: bootstrap.state == .enrolling,
+                        enroll: {
+                            Task { await bootstrap.enrollAndRecoverTrust() }
+                        }
+                    )
+                }
                 MessageStatusSection(statusMessage: model.statusMessage)
                 MessageComposerSection(
                     destinationText: $model.destinationText,
@@ -84,8 +92,27 @@ private extension NodeBootstrapState {
             "gear.badge"
         case .identityReady:
             "checkmark.shield"
+        case .enrolling:
+            "arrow.trianglehead.2.clockwise.rotate.90"
+        case .ready:
+            "checkmark.shield.fill"
         case .failed:
             "exclamationmark.shield"
+        }
+    }
+}
+
+private struct TrustRecoverySection: View {
+    let isWorking: Bool
+    let enroll: () -> Void
+
+    var body: some View {
+        Section("Trust Recovery") {
+            Button("Enroll Certificate", systemImage: "person.badge.key", action: enroll)
+                .disabled(isWorking)
+            if isWorking {
+                ProgressView("Verifying certificate and revocation state")
+            }
         }
     }
 }
