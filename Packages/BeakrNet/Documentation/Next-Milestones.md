@@ -125,6 +125,8 @@ Exit criteria:
 
 ## Milestone 9: Reliable large Data transfer
 
+**Status: Complete.** Implemented by `BeakrNetTransfer` with canonical manifests and chunks, SHA-256 verification, bounded restart-safe staging, resume ranges, sender backpressure, cancellation, expiry, storage-pressure cleanup, verified publication, and route-handoff continuation.
+
 Extend Data with bounded transfer manifests and chunks after ordinary messaging is stable. This milestone covers downloadable files and store-and-forward media, not live audio or video samples.
 
 The milestone should provide content length and digest commitments, bounded chunks, resume offsets or chunk maps, staging storage, integrity verification before publication, cancellation, progress, backpressure, expiry, storage-pressure handling, and garbage collection. Control traffic must continue progressing during transfers.

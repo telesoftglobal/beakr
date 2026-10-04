@@ -291,7 +291,7 @@ Exit requires deterministic offline-edit convergence or identical explicit confl
 
 ## Milestone 9: Reliable large Data transfer
 
-**Status: In progress; design gate complete.** [Reliable Large Data Transfer Design](Reliable-Transfer-Design.md) defines immutable manifests, SHA-256 commitments, bounded chunks and missing ranges, restart-safe staging, authorization, backpressure, atomic publication, expiry, cancellation, storage pressure, cleanup, diagnostics, and route-independent identity. Live audio and video samples remain outside reliable envelope delivery.
+**Status: Complete.** [Reliable Large Data Transfer Design](Reliable-Transfer-Design.md) defines immutable manifests, SHA-256 commitments, bounded chunks and missing ranges, restart-safe staging, authorization, backpressure, atomic publication, expiry, cancellation, storage pressure, cleanup, diagnostics, and route-independent identity. `BeakrNetTransfer` implements the canonical protocol, digest-verified resumable staging, authorized dispatch, bounded sender windows and retry delays, verified publication, cleanup, relay/LAN continuation, and Control fairness. Live audio and video samples remain outside reliable envelope delivery.
 
 Exit requires interruption and restart recovery, corrupt and duplicate chunk rejection, final integrity verification, bounded storage, cancellation cleanup, route-handoff continuation, and continued Control progress under transfer load.
 
