@@ -109,6 +109,35 @@ struct DataProtocolTests {
         #expect(await handler.count == 1)
     }
 
+    @Test("Cancellation prevents later correlated request dispatch")
+    func cancellationState() async throws {
+        let handler = RecordingDataHandler()
+        let dispatcher = DataDispatcher(supportedOperations: [operation], handler: handler, clock: { now })
+        let cancellation = DataMessage(kind: .cancellation, operation: operation, correlationID: correlation)
+        #expect(await dispatcher.dispatch(try makeEnvelope(cancellation)) == .handled(response: nil))
+        let request = DataMessage(kind: .request, operation: operation, correlationID: correlation)
+        guard case .rejected(.cancelled, let response) = await dispatcher.dispatch(try makeEnvelope(request, id: MessageID())) else {
+            Issue.record("Expected cancelled request rejection"); return
+        }
+        #expect(response?.errorCode == .cancelled)
+        #expect(await handler.count == 1)
+    }
+
+    @Test("Handlers cannot substitute an unrelated correlated response")
+    func responseBinding() async throws {
+        let unrelated = DataMessage(
+            kind: .response, operation: operation, correlationID: DataCorrelationID(), body: Data("wrong".utf8)
+        )
+        let handler = RecordingDataHandler(response: unrelated)
+        let dispatcher = DataDispatcher(supportedOperations: [operation], handler: handler, clock: { now })
+        let request = DataMessage(kind: .request, operation: operation, correlationID: correlation)
+        guard case .rejected(.handlerFailure, let response) = await dispatcher.dispatch(try makeEnvelope(request)) else {
+            Issue.record("Expected response-binding rejection"); return
+        }
+        #expect(response?.correlationID == correlation)
+        #expect(response?.errorCode == .handlerFailure)
+    }
+
     private func makeEnvelope(_ message: DataMessage, id: MessageID? = nil, sequence: UInt64 = 1) throws -> BeakrNetEnvelope {
         try DataCodec().makeEnvelope(
             for: message,

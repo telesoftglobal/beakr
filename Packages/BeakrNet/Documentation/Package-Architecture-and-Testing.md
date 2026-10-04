@@ -40,6 +40,8 @@ BeakrNet
 
 `BeakrNetControl` depends on `BeakrNetCore`. It must not import SwiftUI, Network, Security, or an application target. It owns typed Control payload schemas, canonical encoding and decoding, semantic validation, and protocol dispatch. `BeakrNetCore` continues owning envelopes, channel identity, sessions, delivery bookkeeping, and transport-neutral primitives.
 
+`BeakrNetData` depends on `BeakrNetControl` and `BeakrNetCore`. It owns reusable Data message semantics and durable node-side protocol state, while application repositories own product mutations and schemas. It likewise remains independent of SwiftUI, Network, Security, and application targets.
+
 Do not create a separate Xcode application project for Milestone 6. The existing `BeakrNetDemoIntegrationTests` signed host remains the place for a small number of end-to-end Apple-platform checks.
 
 ## Change boundaries

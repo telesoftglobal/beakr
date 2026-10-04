@@ -227,6 +227,7 @@ public enum DataDispatchRejection: String, Codable, Equatable, Sendable {
     case unsupportedOperation = "unsupported-operation"
     case unauthorized
     case expired
+    case cancelled
     case duplicate
     case resourceLimit = "resource-limit"
     case handlerFailure = "handler-failure"
@@ -252,6 +253,8 @@ public actor DataDispatcher {
     private let supportedOperations: Set<DataOperation>
     private let maximumTrackedMessages: Int
     private let handler: any DataMessageHandler
+    private let persistentState: PersistentDataState?
+    private let cancellations: DataCancellationRegistry
     private let clock: Clock
     private let eventSink: EventSink
     private var seenOrder: [MessageID] = []
@@ -268,6 +271,8 @@ public actor DataDispatcher {
         authorization: DataAuthorizationPolicy = .allowAuthenticatedPeer,
         supportedOperations: Set<DataOperation>,
         maximumTrackedMessages: Int = 4_096,
+        persistentState: PersistentDataState? = nil,
+        cancellations: DataCancellationRegistry = DataCancellationRegistry(),
         handler: any DataMessageHandler,
         clock: @escaping Clock = Date.init,
         eventSink: @escaping EventSink = { _ in }
@@ -278,6 +283,8 @@ public actor DataDispatcher {
         self.supportedOperations = supportedOperations
         self.maximumTrackedMessages = maximumTrackedMessages
         self.handler = handler
+        self.persistentState = persistentState
+        self.cancellations = cancellations
         self.clock = clock
         self.eventSink = eventSink
     }
@@ -298,10 +305,23 @@ public actor DataDispatcher {
         if let deadline = message.deadline, deadline <= clock() {
             return reject(envelope.messageID, .expired, message: message)
         }
+        if message.kind == .request, await cancellations.contains(message.correlationID) {
+            return reject(envelope.messageID, .cancelled, message: message)
+        }
+        if let stored = await persistentState?.result(for: envelope.messageID) {
+            return .handled(response: stored.response)
+        }
+        if let key = message.idempotencyKey, let stored = await persistentState?.result(for: key) {
+            return .handled(response: stored.response)
+        }
         guard !seen.contains(envelope.messageID) else {
             return reject(envelope.messageID, .duplicate, message: nil)
         }
         remember(envelope.messageID)
+
+        if message.kind == .cancellation {
+            await cancellations.insert(message.correlationID)
+        }
 
         if let key = message.idempotencyKey, let stored = mutationResults[key] {
             switch stored {
@@ -311,8 +331,34 @@ public actor DataDispatcher {
         }
         do {
             let response = try await handler.handle(message, envelope: envelope)
+            if let response {
+                guard (response.kind == .response || response.kind == .applicationError),
+                      response.operation == message.operation,
+                      response.correlationID == message.correlationID else {
+                    eventSink(.handlerFailed(messageID: envelope.messageID, operation: message.operation))
+                    return reject(envelope.messageID, .handlerFailure, message: message)
+                }
+                do { _ = try codec.encode(response) }
+                catch {
+                    eventSink(.handlerFailed(messageID: envelope.messageID, operation: message.operation))
+                    return reject(envelope.messageID, .resourceLimit, message: message)
+                }
+            }
             if let key = message.idempotencyKey {
                 mutationResults[key] = response.map(StoredResult.response) ?? .noResponse
+            }
+            if let persistentState {
+                do {
+                    try await persistentState.record(StoredDataResult(
+                        messageID: envelope.messageID,
+                        idempotencyKey: message.idempotencyKey,
+                        response: response,
+                        completedAt: clock()
+                    ))
+                } catch {
+                    eventSink(.handlerFailed(messageID: envelope.messageID, operation: message.operation))
+                    return reject(envelope.messageID, .handlerFailure, message: message)
+                }
             }
             eventSink(.accepted(messageID: envelope.messageID, operation: message.operation, kind: message.kind))
             return .handled(response: response)
@@ -343,6 +389,7 @@ public actor DataDispatcher {
         case .unsupportedOperation: .unsupportedOperation
         case .unauthorized: .unauthorized
         case .expired: .deadlineExceeded
+        case .cancelled: .cancelled
         case .resourceLimit: .resourceLimit
         case .handlerFailure: .handlerFailure
         default: .invalidRequest
@@ -355,5 +402,29 @@ public actor DataDispatcher {
             errorCode: code
         )
         return .rejected(reason, response: response)
+    }
+}
+
+public actor DataCancellationRegistry {
+    private let maximumEntries: Int
+    private var order: [DataCorrelationID] = []
+    private var entries: Set<DataCorrelationID> = []
+
+    public init(maximumEntries: Int = 4_096) {
+        precondition(maximumEntries > 0)
+        self.maximumEntries = maximumEntries
+    }
+
+    public func insert(_ correlationID: DataCorrelationID) {
+        guard entries.insert(correlationID).inserted else { return }
+        order.append(correlationID)
+        if order.count > maximumEntries { entries.remove(order.removeFirst()) }
+    }
+
+    public func contains(_ correlationID: DataCorrelationID) -> Bool { entries.contains(correlationID) }
+
+    public func remove(_ correlationID: DataCorrelationID) {
+        entries.remove(correlationID)
+        order.removeAll { $0 == correlationID }
     }
 }

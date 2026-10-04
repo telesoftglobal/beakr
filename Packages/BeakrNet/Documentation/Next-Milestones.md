@@ -76,6 +76,8 @@ Exit criteria:
 
 ## Milestone 7: Application Data protocol
 
+**Status: Complete.** Implemented by the platform-neutral `BeakrNetData` target with canonical typed messages, bounded dispatch, durable outgoing and incoming state, restart-safe idempotency results, explicit cancellation, and unchanged relay/LAN retry behavior.
+
 Add the application-facing reliable message boundary above raw envelopes. Begin with bounded messages and request/response; do not add chunked files or live media yet.
 
 The milestone should provide:
