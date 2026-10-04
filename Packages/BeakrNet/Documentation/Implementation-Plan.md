@@ -301,7 +301,7 @@ Exit requires interruption and restart recovery, corrupt and duplicate chunk rej
 
 ## Milestone 11: Production operations
 
-**Status: In progress; design gate complete.** [Production Operations Design](Production-Operations-Design.md) defines secure key custody, workload authentication, layered admission controls, explicit revocation grace, privacy-safe audit and telemetry, integrity-committed backup/restore, rollout gates, and operational recovery drills. Development PSKs and filesystem authority keys are prohibited in this profile.
+**Status: Complete.** [Production Operations Design](Production-Operations-Design.md) defines secure key custody, workload authentication, layered admission controls, explicit revocation grace, privacy-safe audit and telemetry, integrity-committed backup/restore, rollout gates, and operational recovery drills. `BeakrNetOperations` implements a validated production profile, deterministic layered admission, bounded audit and metric contracts, fully verified atomic restore coordination, key-custody readiness, and fail-safe rollout evaluation. Development PSKs and filesystem authority keys are prohibited. Provider-specific KMS, HTTP-hosting, monitoring, and deployment adapters remain infrastructure responsibilities behind these contracts.
 
 ## Milestone 12: Additional transports and federation
 

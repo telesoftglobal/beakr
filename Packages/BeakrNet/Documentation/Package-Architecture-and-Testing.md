@@ -22,6 +22,8 @@ BeakrNetCore
 
 Security, authority, and transport targets depend on `BeakrNetCore`; they must not depend on application Data or Blackboard modules. Relays continue treating application payloads as opaque.
 
+`BeakrNetOperations` is a platform-neutral deployment-policy boundary depending only on `BeakrNetCore`. It owns validated production profiles, admission policy, safe audit/telemetry schemas, backup verification, restore activation gates, and deterministic recovery drills. Concrete KMS, HTTP server, monitoring, and orchestration adapters remain outside the package and may not weaken protocol verification.
+
 ## Milestone 6 target
 
 Milestone 6 is named **Typed Control Protocol**. It is the first milestone in the broader **Application Channel Semantics** phase.

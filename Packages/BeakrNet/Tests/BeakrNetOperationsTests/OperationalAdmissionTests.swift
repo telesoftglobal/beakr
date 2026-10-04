@@ -31,6 +31,40 @@ struct OperationalAdmissionTests {
         #expect(await controller.trackedPrincipalCount() <= 2)
     }
 
+    @Test("Global, identity, and operation limits reject at their own layer")
+    func layeredOverload() async throws {
+        let identity = NodeID()
+        let identityController = try OperationalAdmissionController(
+            profile: profile(sourceCapacity: 10, identityCapacity: 1),
+            operationLimit: .init(capacity: 10, refillPerSecond: 1)
+        )
+        let identityContext = OperationalAdmissionContext(source: "source-a", identity: identity,
+                                                          endpoint: .enrollment)
+        #expect(await identityController.admit(identityContext) == .admitted)
+        guard case .rejected(.identity, _) = await identityController.admit(identityContext) else {
+            Issue.record("Expected identity rejection"); return
+        }
+
+        let globalController = try OperationalAdmissionController(
+            profile: profile(sourceCapacity: 10, globalCapacity: 1),
+            operationLimit: .init(capacity: 10, refillPerSecond: 1)
+        )
+        #expect(await globalController.admit(.init(source: "source-a", identity: nil,
+                                                  endpoint: .enrollment)) == .admitted)
+        guard case .rejected(.global, _) = await globalController.admit(
+            .init(source: "source-b", identity: nil, endpoint: .revocationRead)
+        ) else { Issue.record("Expected global rejection"); return }
+
+        let operationController = try OperationalAdmissionController(
+            profile: profile(sourceCapacity: 10), operationLimit: .init(capacity: 1, refillPerSecond: 1)
+        )
+        #expect(await operationController.admit(.init(source: "source-a", identity: nil,
+                                                     endpoint: .enrollment)) == .admitted)
+        guard case .rejected(.operation, _) = await operationController.admit(
+            .init(source: "source-b", identity: nil, endpoint: .enrollment)
+        ) else { Issue.record("Expected operation rejection"); return }
+    }
+
     @Test("Audit retention is bounded and contains no free-form request fields")
     func auditRetention() async {
         let now = Date(timeIntervalSince1970: 1_000)
@@ -44,13 +78,14 @@ struct OperationalAdmissionTests {
         #expect(await journal.snapshot(now: now).count == 2)
     }
 
-    private func profile(sourceCapacity: Int, tracked: Int = 100) -> BeakrNetProductionProfile {
+    private func profile(sourceCapacity: Int, identityCapacity: Int = 100,
+                         globalCapacity: Int = 1_000, tracked: Int = 100) -> BeakrNetProductionProfile {
         .init(environment: "production", enrollmentURL: URL(string: "https://a.example/e")!,
               revocationURL: URL(string: "https://a.example/r")!,
               keyCustody: .externalKMS(provider: "kms", keyIdentifier: "key"), serviceAuthentication: .mutualTLS,
               perSourceLimit: .init(capacity: sourceCapacity, refillPerSecond: 1),
-              perIdentityLimit: .init(capacity: 100, refillPerSecond: 100),
-              globalLimit: .init(capacity: 1_000, refillPerSecond: 1_000), maximumTrackedLimiters: tracked,
+              perIdentityLimit: .init(capacity: identityCapacity, refillPerSecond: 1),
+              globalLimit: .init(capacity: globalCapacity, refillPerSecond: 1), maximumTrackedLimiters: tracked,
               offlineRevocationGrace: 60, auditRetention: 60, maximumAuditEvents: 100,
               backup: .init(retentionCount: 1, maximumAge: 60, encryptionProvider: "kms"))
     }

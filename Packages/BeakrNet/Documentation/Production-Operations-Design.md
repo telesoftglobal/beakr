@@ -37,3 +37,7 @@ Deterministic coordinators model authority rotation, backup restore, overload, c
 ## Completion criteria
 
 Tests cover invalid production profiles, key-custody outage, identity and global overload, bounded limiter state, audit retention, backup corruption and rollback, restore staging, rotation and recovery drills, endpoint clock disagreement, stale revocation state, partial rollout, and safe configuration rollback.
+
+## Implemented validation
+
+`BeakrNetOperationsTests` exercises secure-profile rejection, deterministic overload and refill, bounded principal and audit state, privacy-safe metric counters, custody outage, corrupt and incomplete backups, generation and sequence rollback, restore resource limits, activation only after complete verification, stale revocation state, clock disagreement, partial rollout, and successful next-generation activation. Provider adapters are intentionally injected; tests do not require cloud services, Apple networking services, or credentials.

@@ -145,6 +145,8 @@ Exit criteria include process termination and relaunch, device lock, background-
 
 ## Milestone 11: Production operations
 
+**Status: Complete.** Implemented by `BeakrNetOperations` with validated deployment configuration, secure custody requirements, deterministic layered rate limits, bounded privacy-safe audit and telemetry, integrity-committed backup verification, atomic restore activation, custody readiness, and fail-safe rollout drills.
+
 Turn the existing protocol boundaries into a deployable service profile. This includes authority-key custody, enrollment and revocation HTTP hosting, service authentication, rate limits, abuse controls, backups, audit retention, privacy-safe telemetry, operational dashboards, deployment configuration, and selection of the offline revocation grace window.
 
 Development PSKs and filesystem authority keys are prohibited in the production profile. Deployment tests must cover key rotation and recovery drills, restore from backup, endpoint overload, clock disagreement, stale revocation state, partial rollout, and rollback without weakening trust rules.
