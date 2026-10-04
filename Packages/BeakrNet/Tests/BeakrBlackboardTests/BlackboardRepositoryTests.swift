@@ -62,6 +62,20 @@ struct BlackboardRepositoryTests {
             )
         }
     }
+
+    @Test("A rejected operation batch has no partial mutation")
+    func atomicBatch() async throws {
+        let fixture = Fixture()
+        let repository = try await fixture.repository(applying: [], returnRepository: true)
+        let valid = fixture.operation(replica: fixture.replicaA, counter: 1, bytes: "A")
+        let invalid = fixture.operation(replica: fixture.replicaB, counter: 2, bytes: "B")
+        await #expect(throws: BlackboardRepositoryError.causalRollback) {
+            try await repository.applyBatch([valid, invalid], authorizedNodeID: fixture.owner)
+        }
+        let snapshot = try await repository.snapshot(spaceID: fixture.space, authorizedNodeID: fixture.owner)
+        #expect(snapshot.records.isEmpty)
+        #expect(snapshot.journalOffset == 0)
+    }
 }
 
 private struct Fixture {

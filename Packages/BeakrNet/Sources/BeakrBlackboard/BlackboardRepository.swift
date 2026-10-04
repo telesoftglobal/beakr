@@ -153,40 +153,28 @@ public actor BlackboardRepository {
     public func apply(_ operation: BlackboardOperation, authorizedNodeID: NodeID) throws -> BlackboardApplyResult {
         guard var space = spaces[operation.spaceID] else { throw BlackboardRepositoryError.unknownSpace }
         guard let role = space.members[authorizedNodeID], role >= .writer else { throw BlackboardRepositoryError.unauthorized }
-        if space.operationIDs.contains(operation.operationID) { return .duplicate }
-        try validate(operation, in: space)
-
-        var versions = space.records[operation.recordID] ?? []
-        if versions.isEmpty, space.records.count >= policy.maximumRecordsPerSpace {
-            throw BlackboardRepositoryError.resourceLimit
-        }
-        if operation.kind == .resolve {
-            guard Set(operation.resolves) == Set(versions.map(\.operationID)), versions.count > 1,
-                  versions.allSatisfy({ operation.context.observes($0.dot) }) else {
-                throw BlackboardRepositoryError.conflictResolutionMismatch
-            }
-        }
-        versions.removeAll { operation.context.observes($0.dot) }
-        versions.append(BlackboardRecordVersion(
-            operationID: operation.operationID,
-            dot: operation.dot,
-            context: operation.context,
-            value: operation.value,
-            authoredAt: operation.authoredAt
-        ))
-        versions.sort { $0.operationID < $1.operationID }
-        guard versions.count <= policy.maximumVersionsPerRecord else { throw BlackboardRepositoryError.resourceLimit }
-        guard space.journal.count < policy.maximumJournalOperations else { throw BlackboardRepositoryError.resourceLimit }
-
-        space.records[operation.recordID] = versions
-        space.frontier = space.frontier.advancing(operation.dot)
-        space.journal.append(operation)
-        space.operationIDs.insert(operation.operationID)
+        let (result, change) = try apply(operation, to: &space)
         spaces[operation.spaceID] = space
-        let cursor = BlackboardCursor(compactionGeneration: space.compactionGeneration, journalOffset: UInt64(space.journal.count))
-        let record = BlackboardRecord(recordID: operation.recordID, versions: versions)
-        notify(.init(spaceID: operation.spaceID, recordID: operation.recordID, operationID: operation.operationID, cursor: cursor))
-        return .applied(record: record, cursor: cursor)
+        if let change { notify(change) }
+        return result
+    }
+
+    public func applyBatch(_ operations: [BlackboardOperation], authorizedNodeID: NodeID) throws -> [BlackboardApplyResult] {
+        guard let spaceID = operations.first?.spaceID, operations.allSatisfy({ $0.spaceID == spaceID }) else {
+            throw BlackboardRepositoryError.invalidOperation
+        }
+        guard var tentative = spaces[spaceID] else { throw BlackboardRepositoryError.unknownSpace }
+        guard let role = tentative.members[authorizedNodeID], role >= .writer else { throw BlackboardRepositoryError.unauthorized }
+        var results: [BlackboardApplyResult] = []
+        var changes: [BlackboardChange] = []
+        for operation in operations {
+            let (result, change) = try apply(operation, to: &tentative)
+            results.append(result)
+            if let change { changes.append(change) }
+        }
+        spaces[spaceID] = tentative
+        changes.forEach(notify)
+        return results
     }
 
     public func snapshot(spaceID: BlackboardSpaceID, authorizedNodeID: NodeID) throws -> BlackboardSpaceSnapshot {
@@ -243,6 +231,37 @@ public actor BlackboardRepository {
         guard let space = spaces[id] else { throw BlackboardRepositoryError.unknownSpace }
         guard space.members[nodeID] != nil else { throw BlackboardRepositoryError.unauthorized }
         return space
+    }
+
+    private func apply(
+        _ operation: BlackboardOperation,
+        to space: inout SpaceState
+    ) throws -> (BlackboardApplyResult, BlackboardChange?) {
+        if space.operationIDs.contains(operation.operationID) { return (.duplicate, nil) }
+        try validate(operation, in: space)
+        var versions = space.records[operation.recordID] ?? []
+        if versions.isEmpty, space.records.count >= policy.maximumRecordsPerSpace { throw BlackboardRepositoryError.resourceLimit }
+        if operation.kind == .resolve {
+            guard Set(operation.resolves) == Set(versions.map(\.operationID)), versions.count > 1,
+                  versions.allSatisfy({ operation.context.observes($0.dot) }) else {
+                throw BlackboardRepositoryError.conflictResolutionMismatch
+            }
+        }
+        versions.removeAll { operation.context.observes($0.dot) }
+        versions.append(.init(operationID: operation.operationID, dot: operation.dot, context: operation.context,
+                              value: operation.value, authoredAt: operation.authoredAt))
+        versions.sort { $0.operationID < $1.operationID }
+        guard versions.count <= policy.maximumVersionsPerRecord,
+              space.journal.count < policy.maximumJournalOperations else { throw BlackboardRepositoryError.resourceLimit }
+        space.records[operation.recordID] = versions
+        space.frontier = space.frontier.advancing(operation.dot)
+        space.journal.append(operation)
+        space.operationIDs.insert(operation.operationID)
+        let cursor = BlackboardCursor(compactionGeneration: space.compactionGeneration, journalOffset: UInt64(space.journal.count))
+        let record = BlackboardRecord(recordID: operation.recordID, versions: versions)
+        let change = BlackboardChange(spaceID: operation.spaceID, recordID: operation.recordID,
+                                      operationID: operation.operationID, cursor: cursor)
+        return (.applied(record: record, cursor: cursor), change)
     }
 
     private func validate(_ operation: BlackboardOperation, in space: SpaceState) throws {
