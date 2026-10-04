@@ -51,6 +51,27 @@ struct BeakrTests {
         #expect(model.outgoingMessages[0].state == .failed)
         #expect(!model.messageText.isEmpty)
     }
+
+    @Test("Bootstrap restores a stable identity before requesting authority configuration")
+    func bootstrapIdentity() async {
+        let nodeID = NodeID()
+        let model = NodeBootstrapModel(identityLoader: FixedIdentityLoader(nodeID: nodeID))
+
+        await model.start()
+
+        #expect(model.nodeID == nodeID.rawValue)
+        #expect(model.state == .needsConfiguration)
+    }
+
+    @Test("Bootstrap fails closed when secure identity storage is unavailable")
+    func bootstrapFailure() async {
+        let model = NodeBootstrapModel(identityLoader: FailingIdentityLoader())
+
+        await model.start()
+
+        #expect(model.nodeID == nil)
+        #expect(model.state == .failed)
+    }
 }
 
 private actor RecordingMessagingService: HostMessagingService {
@@ -69,4 +90,13 @@ private struct FailingMessagingService: HostMessagingService {
     }
 
     func cancel(correlationID: DataCorrelationID) async throws {}
+}
+
+private struct FixedIdentityLoader: NodeIdentityLoading {
+    let nodeID: NodeID
+    func loadOrCreateNodeID() throws -> NodeID { nodeID }
+}
+
+private struct FailingIdentityLoader: NodeIdentityLoading {
+    func loadOrCreateNodeID() throws -> NodeID { throw BeakrMessagingSetupError.notConfigured }
 }

@@ -3,18 +3,31 @@ import SwiftUI
 @MainActor
 struct ContentView: View {
     @State private var model: MessageComposerModel
+    @State private var bootstrap: NodeBootstrapModel
 
     init() {
         _model = State(initialValue: .unconfigured())
+        _bootstrap = State(initialValue: NodeBootstrapModel())
     }
 
     init(model: MessageComposerModel) {
         _model = State(initialValue: model)
+        _bootstrap = State(initialValue: NodeBootstrapModel())
+    }
+
+    init(model: MessageComposerModel, bootstrap: NodeBootstrapModel) {
+        _model = State(initialValue: model)
+        _bootstrap = State(initialValue: bootstrap)
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                NodeSetupSection(
+                    nodeID: bootstrap.nodeID,
+                    state: bootstrap.state,
+                    statusMessage: bootstrap.statusMessage
+                )
                 MessageStatusSection(statusMessage: model.statusMessage)
                 MessageComposerSection(
                     destinationText: $model.destinationText,
@@ -29,6 +42,42 @@ struct ContentView: View {
                 OutgoingMessagesSection(messages: model.outgoingMessages)
             }
             .navigationTitle("Messages")
+            .task {
+                await bootstrap.start()
+            }
+        }
+    }
+}
+
+private struct NodeSetupSection: View {
+    let nodeID: UUID?
+    let state: NodeBootstrapState
+    let statusMessage: String
+
+    var body: some View {
+        Section("This Device") {
+            Label(statusMessage, systemImage: state.systemImage)
+                .foregroundStyle(state == .failed ? .red : .secondary)
+
+            if let nodeID {
+                LabeledContent("Node ID", value: nodeID.uuidString.lowercased())
+                    .textSelection(.enabled)
+            }
+        }
+    }
+}
+
+private extension NodeBootstrapState {
+    var systemImage: String {
+        switch self {
+        case .starting:
+            "key.horizontal"
+        case .needsConfiguration:
+            "gear.badge"
+        case .identityReady:
+            "checkmark.shield"
+        case .failed:
+            "exclamationmark.shield"
         }
     }
 }
