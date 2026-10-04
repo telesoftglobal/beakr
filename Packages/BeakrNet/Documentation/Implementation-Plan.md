@@ -291,7 +291,7 @@ Exit requires deterministic offline-edit convergence or identical explicit confl
 
 ## Milestone 9: Reliable large Data transfer
 
-**Status: Planned.** Add manifests, bounded chunks, content digests, resumability, staging, cancellation, progress, backpressure, expiry, storage-pressure behavior, and cleanup for downloadable files and store-and-forward media. Live audio and video samples remain outside reliable envelope delivery.
+**Status: In progress; design gate complete.** [Reliable Large Data Transfer Design](Reliable-Transfer-Design.md) defines immutable manifests, SHA-256 commitments, bounded chunks and missing ranges, restart-safe staging, authorization, backpressure, atomic publication, expiry, cancellation, storage pressure, cleanup, diagnostics, and route-independent identity. Live audio and video samples remain outside reliable envelope delivery.
 
 Exit requires interruption and restart recovery, corrupt and duplicate chunk rejection, final integrity verification, bounded storage, cancellation cleanup, route-handoff continuation, and continued Control progress under transfer load.
 
