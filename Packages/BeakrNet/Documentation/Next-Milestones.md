@@ -99,6 +99,8 @@ Exit criteria:
 
 ## Milestone 8: Blackboard replication
 
+**Status: Complete.** Implemented by the platform-neutral `BeakrBlackboard` target with canonical synchronization, causal multi-value records, explicit conflicts, authorized durable repositories, generation-bound compaction, bounded subscriptions, and route-independent operation identity.
+
 Define Blackboard as replicated application state rather than a differently prioritized Data message. Begin with a small, generic repository and synchronization laboratory before selecting product-specific schemas.
 
 The design gate must settle:

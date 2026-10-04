@@ -76,6 +76,60 @@ struct BlackboardRepositoryTests {
         #expect(snapshot.records.isEmpty)
         #expect(snapshot.journalOffset == 0)
     }
+
+    @Test("Conflict resolution must name and observe every current version")
+    func explicitResolution() async throws {
+        let fixture = Fixture()
+        let repository = try await fixture.repository(applying: [
+            fixture.operation(replica: fixture.replicaA, counter: 1, bytes: "A", operationID: fixture.operationA),
+            fixture.operation(replica: fixture.replicaB, counter: 1, bytes: "B", operationID: fixture.operationB)
+        ], returnRepository: true)
+        let context = BlackboardFrontier(entries: [
+            .init(replicaID: fixture.replicaA, counter: 1), .init(replicaID: fixture.replicaB, counter: 1)
+        ])
+        let resolver = BlackboardReplicaID()
+        let incomplete = BlackboardOperation(
+            spaceID: fixture.space, recordID: fixture.record, dot: .init(replicaID: resolver, counter: 1),
+            context: context, kind: .resolve,
+            value: .init(schema: "com.example.note", schemaVersion: 1, bytes: Data("merged".utf8)),
+            resolves: [fixture.operationA], authoredAt: fixture.now
+        )
+        await #expect(throws: BlackboardRepositoryError.conflictResolutionMismatch) {
+            try await repository.apply(incomplete, authorizedNodeID: fixture.owner)
+        }
+        let resolution = BlackboardOperation(
+            spaceID: fixture.space, recordID: fixture.record, dot: .init(replicaID: resolver, counter: 1),
+            context: context, kind: .resolve,
+            value: .init(schema: "com.example.note", schemaVersion: 1, bytes: Data("merged".utf8)),
+            resolves: [fixture.operationA, fixture.operationB], authoredAt: fixture.now
+        )
+        _ = try await repository.apply(resolution, authorizedNodeID: fixture.owner)
+        let snapshot = try await repository.snapshot(spaceID: fixture.space, authorizedNodeID: fixture.owner)
+        #expect(snapshot.records.first?.hasConflict == false)
+        #expect(snapshot.records.first?.versions.first?.value?.bytes == Data("merged".utf8))
+    }
+
+    @Test("Subscriptions are bounded and publish identifiers without values")
+    func subscriptions() async throws {
+        let fixture = Fixture()
+        let repository = BlackboardRepository(policy: .init(maximumSubscriptions: 1))
+        try await repository.createSpace(id: fixture.space, name: "Notes", owner: fixture.owner)
+        let recorder = ChangeRecorder()
+        _ = try await repository.subscribe(spaceID: fixture.space, authorizedNodeID: fixture.owner) { recorder.append($0) }
+        await #expect(throws: BlackboardRepositoryError.resourceLimit) {
+            try await repository.subscribe(spaceID: fixture.space, authorizedNodeID: fixture.owner) { _ in }
+        }
+        let operation = fixture.operation(replica: fixture.replicaA, counter: 1, bytes: "private")
+        _ = try await repository.apply(operation, authorizedNodeID: fixture.owner)
+        #expect(recorder.values.map(\.operationID) == [operation.operationID])
+    }
+}
+
+private final class ChangeRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [BlackboardChange] = []
+    var values: [BlackboardChange] { lock.withLock { storage } }
+    func append(_ change: BlackboardChange) { lock.withLock { storage.append(change) } }
 }
 
 private struct Fixture {

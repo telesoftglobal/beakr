@@ -285,7 +285,7 @@ Exit requires a request to retry unchanged across relay/LAN handoff while produc
 
 ## Milestone 8: Blackboard replication
 
-**Status: In progress; design gate complete.** [Blackboard Replication Design](Blackboard-Replication-Design.md) defines identifiers, an observed-remove multi-value register, vector-frontier causality, explicit conflicts, application-owned resolution, membership roles, canonical snapshots and journals, generation-bound cursors, compaction safety, tombstone retention, attachment references, subscriptions, and resource bounds. Wall-clock time is never a conflict-resolution rule.
+**Status: Complete.** [Blackboard Replication Design](Blackboard-Replication-Design.md) defines identifiers, an observed-remove multi-value register, vector-frontier causality, explicit conflicts, application-owned resolution, membership roles, canonical snapshots and journals, generation-bound cursors, compaction safety, tombstone retention, attachment references, subscriptions, and resource bounds. `BeakrBlackboard` implements the canonical bounded protocol, atomic batch dispatch, authorized repositories, deterministic concurrent conflicts, explicit resolution, restart-safe persistence, causal compaction, subscription hints, and unchanged operation identity through relay/LAN handoff. Wall-clock time is never a conflict-resolution rule.
 
 Exit requires deterministic offline-edit convergence or identical explicit conflicts regardless of delivery order, restart-safe snapshot/journal recovery, rollback and invalid-causality rejection, authorization enforcement, and synchronization across route handoff without changing operation identity. Attachments are Data-transfer references rather than Blackboard blobs.
 
