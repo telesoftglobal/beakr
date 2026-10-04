@@ -27,4 +27,50 @@ struct TransferStagingStoreTests {
         let completed = try await restored.finalize(id)
         #expect(try Data(contentsOf: completed) == bytes)
     }
+
+    @Test("Restart rejects a corrupt staged chunk and requests it again")
+    func corruptRestartChunk() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = Date(timeIntervalSince1970: 1_000), bytes = Data("abc".utf8), id = TransferID()
+        let manifest = makeManifest(id: id, bytes: bytes, now: now)
+        let store = try await TransferStagingStore.open(rootURL: root, now: now)
+        try await store.admit(manifest, now: now)
+        _ = try await store.receive(chunk(id: id, bytes: bytes), now: now)
+        try Data("bad".utf8).write(to: root.appendingPathComponent(id.rawValue.uuidString).appendingPathComponent("chunk-0.data"))
+        let restored = try await TransferStagingStore.open(rootURL: root, now: now)
+        #expect(try await restored.missingRanges(for: id) == [.init(lowerBound: 0, upperBound: 1)])
+    }
+
+    @Test("Conflicting duplicates, storage pressure, cancellation, and expiry fail safely")
+    func resourceAndCleanupBounds() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = Date(timeIntervalSince1970: 1_000), bytes = Data("abc".utf8), id = TransferID()
+        let store = try await TransferStagingStore.open(rootURL: root, policy: .init(maximumConcurrentTransfers: 1, maximumReservedBytes: 3), now: now)
+        try await store.admit(makeManifest(id: id, bytes: bytes, now: now), now: now)
+        _ = try await store.receive(chunk(id: id, bytes: bytes), now: now)
+        let other = Data("xyz".utf8)
+        await #expect(throws: TransferStagingError.conflictingChunk) {
+            try await store.receive(chunk(id: id, bytes: other), now: now)
+        }
+        await #expect(throws: TransferStagingError.storageLimit) {
+            try await store.admit(makeManifest(id: TransferID(), bytes: Data([1]), now: now), now: now)
+        }
+        try await store.cancel(id)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(id.rawValue.uuidString).path))
+        let expiring = makeManifest(id: TransferID(), bytes: Data([1]), now: now, lifetime: 1)
+        try await store.admit(expiring, now: now)
+        try await store.garbageCollect(now: now.addingTimeInterval(2))
+        await #expect(throws: TransferStagingError.unknownTransfer) { try await store.manifest(for: expiring.transferID) }
+    }
+
+    private func makeManifest(id: TransferID, bytes: Data, now: Date, lifetime: TimeInterval = 60) -> TransferManifest {
+        .init(transferID: id, context: .init(sessionID: SessionID(), sourceNodeID: NodeID(), destinationNodeID: NodeID()),
+              byteCount: UInt64(bytes.count), chunkSize: UInt32(bytes.count), chunkCount: 1,
+              contentDigest: Data(SHA256.hash(data: bytes)), mediaType: "x", expiresAt: now.addingTimeInterval(lifetime))
+    }
+    private func chunk(id: TransferID, bytes: Data) -> TransferChunk {
+        .init(transferID: id, index: 0, offset: 0, bytes: bytes, digest: Data(SHA256.hash(data: bytes)))
+    }
 }

@@ -25,9 +25,13 @@ public struct TransferProgress: Equatable, Sendable {
 }
 
 public actor TransferStagingStore {
+    private struct StoredChunk: Codable, Equatable, Sendable {
+        let index: UInt32
+        let digest: Data
+    }
     private struct Entry: Codable, Equatable, Sendable {
         let manifest: TransferManifest
-        var received: [UInt32]
+        var received: [StoredChunk]
     }
     private struct Snapshot: Codable, Sendable {
         static let version = 1
@@ -73,20 +77,20 @@ public actor TransferStagingStore {
             throw TransferStagingError.invalidChunk
         }
         let url = chunkURL(chunk.transferID, chunk.index)
-        if entry.received.contains(chunk.index) {
+        if entry.received.contains(where: { $0.index == chunk.index }) {
             guard let existing = try? Data(contentsOf: url), existing == chunk.bytes else { throw TransferStagingError.conflictingChunk }
             return progress(entry)
         }
         try chunk.bytes.write(to: url, options: .atomic)
-        entry.received.append(chunk.index); entry.received.sort()
+        entry.received.append(.init(index: chunk.index, digest: chunk.digest)); entry.received.sort { $0.index < $1.index }
         entries[chunk.transferID] = entry
-        do { try persist() } catch { try? FileManager.default.removeItem(at: url); entries[chunk.transferID] = entries[chunk.transferID].map { Entry(manifest: $0.manifest, received: $0.received.filter { $0 != chunk.index }) }; throw error }
+        do { try persist() } catch { try? FileManager.default.removeItem(at: url); entries[chunk.transferID] = entries[chunk.transferID].map { Entry(manifest: $0.manifest, received: $0.received.filter { $0.index != chunk.index }) }; throw error }
         return progress(entry)
     }
 
     public func missingRanges(for id: TransferID) throws -> [TransferChunkRange] {
         guard let entry = entries[id] else { throw TransferStagingError.unknownTransfer }
-        let missing = (0..<entry.manifest.chunkCount).filter { !entry.received.contains($0) }
+        let missing = (0..<entry.manifest.chunkCount).filter { index in !entry.received.contains(where: { $0.index == index }) }
         var ranges: [TransferChunkRange] = []
         for index in missing {
             if let last = ranges.last, last.upperBound == index {
@@ -142,9 +146,10 @@ public actor TransferStagingStore {
         let snapshot = try decoder.decode(Snapshot.self, from: Data(contentsOf: url))
         guard snapshot.version == Snapshot.version else { throw TransferStagingError.unsupportedFormat(snapshot.version) }
         for var entry in snapshot.entries where entry.manifest.expiresAt > now {
-            entry.received = entry.received.filter { index in
-                guard let data = try? Data(contentsOf: chunkURL(entry.manifest.transferID, index)) else { return false }
-                return data.count == Int(min(UInt64(entry.manifest.chunkSize), entry.manifest.byteCount - UInt64(index) * UInt64(entry.manifest.chunkSize)))
+            entry.received = entry.received.filter { stored in
+                guard let data = try? Data(contentsOf: chunkURL(entry.manifest.transferID, stored.index)) else { return false }
+                let length = Int(min(UInt64(entry.manifest.chunkSize), entry.manifest.byteCount - UInt64(stored.index) * UInt64(entry.manifest.chunkSize)))
+                return data.count == length && digest(data) == stored.digest
             }
             entries[entry.manifest.transferID] = entry
         }
@@ -161,7 +166,7 @@ public actor TransferStagingStore {
     private func chunkURL(_ id: TransferID, _ index: UInt32) -> URL { transferDirectory(id).appendingPathComponent("chunk-\(index).data") }
     private func digest(_ data: Data) -> Data { Data(SHA256.hash(data: data)) }
     private func progress(_ entry: Entry) -> TransferProgress {
-        let bytes = entry.received.reduce(UInt64(0)) { total, index in total + min(UInt64(entry.manifest.chunkSize), entry.manifest.byteCount - UInt64(index) * UInt64(entry.manifest.chunkSize)) }
+        let bytes = entry.received.reduce(UInt64(0)) { total, stored in total + min(UInt64(entry.manifest.chunkSize), entry.manifest.byteCount - UInt64(stored.index) * UInt64(entry.manifest.chunkSize)) }
         return .init(transferID: entry.manifest.transferID, receivedChunks: UInt32(entry.received.count), totalChunks: entry.manifest.chunkCount, receivedBytes: bytes, totalBytes: entry.manifest.byteCount)
     }
 }
