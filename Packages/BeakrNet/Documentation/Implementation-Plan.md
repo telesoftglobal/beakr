@@ -301,7 +301,7 @@ Exit requires interruption and restart recovery, corrupt and duplicate chunk rej
 
 ## Milestone 11: Production operations
 
-**Status: Planned.** Supply a deployable profile for authority-key custody, enrollment/revocation hosting, service authentication, rate limiting, abuse controls, backup and recovery, audit retention, telemetry, configuration, and the selected offline revocation grace window. Development PSKs and filesystem authority keys are prohibited in this profile.
+**Status: In progress; design gate complete.** [Production Operations Design](Production-Operations-Design.md) defines secure key custody, workload authentication, layered admission controls, explicit revocation grace, privacy-safe audit and telemetry, integrity-committed backup/restore, rollout gates, and operational recovery drills. Development PSKs and filesystem authority keys are prohibited in this profile.
 
 ## Milestone 12: Additional transports and federation
 
