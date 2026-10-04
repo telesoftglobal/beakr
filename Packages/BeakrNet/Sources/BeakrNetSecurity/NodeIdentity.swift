@@ -34,6 +34,38 @@ public struct NodeIdentity: Sendable {
         return signature.derRepresentation
     }
 
+    public func signature(forLANHandshakeTranscript transcript: Data) throws -> Data {
+        try privateKey.signature(for: transcript).derRepresentation
+    }
+
+    public func signature(forCertificateEnrollmentTranscript transcript: Data) throws -> Data {
+        try privateKey.signature(for: transcript).derRepresentation
+    }
+
+    public static func verifyLANHandshakeProof(
+        publicKeyRepresentation: Data,
+        transcript: Data,
+        signature: Data
+    ) -> Bool {
+        guard let publicKey = try? P256.Signing.PublicKey(x963Representation: publicKeyRepresentation),
+              let signature = try? P256.Signing.ECDSASignature(derRepresentation: signature) else {
+            return false
+        }
+        return publicKey.isValidSignature(signature, for: transcript)
+    }
+
+    public static func verifyCertificateEnrollmentSignature(
+        publicKeyRepresentation: Data,
+        transcript: Data,
+        signature: Data
+    ) -> Bool {
+        guard let publicKey = try? P256.Signing.PublicKey(x963Representation: publicKeyRepresentation),
+              let signature = try? P256.Signing.ECDSASignature(derRepresentation: signature) else {
+            return false
+        }
+        return publicKey.isValidSignature(signature, for: transcript)
+    }
+
     public static func verifyRegistrationProof(
         nodeID: NodeID,
         publicKeyRepresentation: Data,

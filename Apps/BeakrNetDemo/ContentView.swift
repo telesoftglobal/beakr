@@ -24,12 +24,80 @@ struct ContentView: View {
                     receivedMessageCount: model.receivedMessageCount,
                     credentialExpiresAt: model.credentialExpiresAt
                 )
+                LifecycleSection(model: model, lifecycle: model.lifecycle)
                 RelaySection(model: model)
                 PeerSection(model: model)
                 PingSection(model: model)
                 EventSection(events: model.events)
             }
             .navigationTitle("BeakrNet Demo")
+        }
+    }
+}
+
+private struct LifecycleSection: View {
+    @Bindable var model: RelayDemoModel
+    @Bindable var lifecycle: CertificateLifecycleCoordinator
+
+    var body: some View {
+        Section("Certificate Lifecycle") {
+            TextField("Authority public key (Base64)", text: $model.authorityPublicKeyBase64)
+#if os(iOS) || os(visionOS)
+                .textInputAutocapitalization(.never)
+#endif
+                .autocorrectionDisabled()
+            TextField("Control-plane HTTPS URL", text: $model.controlPlaneURL)
+#if os(iOS) || os(visionOS)
+                .textInputAutocapitalization(.never)
+                .keyboardType(.URL)
+#endif
+                .autocorrectionDisabled()
+            LabeledContent("Revocation status", value: lifecycle.status)
+            LabeledContent("LAN certificate", value: lifecycle.certificateStatus)
+            LifecycleDateRow(label: "Certificate expires", date: lifecycle.certificateExpiresAt)
+            LifecycleDateRow(label: "Next renewal", date: lifecycle.nextRenewalAt)
+            LifecycleDateRow(label: "Last refresh", date: lifecycle.lastRefreshAt)
+            LifecycleDateRow(label: "Next refresh", date: lifecycle.nextRefreshAt)
+            if let generation = lifecycle.snapshotGeneration {
+                LabeledContent("Snapshot generation") {
+                    Text(generation, format: .number.grouping(.never))
+                }
+            }
+            if let lastError = lifecycle.lastError {
+                Text(lastError)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Button("Save and Start Lifecycle") {
+                Task { await model.saveAndRestartLifecycle() }
+            }
+            Button("Enroll LAN Certificate") {
+                Task { await lifecycle.enrollCertificate() }
+            }
+            .disabled(lifecycle.status == "Not configured")
+            Button("Renew LAN Certificate Now") {
+                Task { await lifecycle.renewCertificateNow() }
+            }
+            .disabled(lifecycle.nextRenewalAt == nil)
+            Button("Refresh Revocations") {
+                Task { await lifecycle.refreshManually() }
+            }
+            .disabled(lifecycle.status == "Not configured")
+        }
+    }
+}
+
+private struct LifecycleDateRow: View {
+    let label: LocalizedStringResource
+    let date: Date?
+
+    var body: some View {
+        LabeledContent(label) {
+            if let date {
+                Text(date, style: .relative)
+            } else {
+                Text("Never")
+            }
         }
     }
 }

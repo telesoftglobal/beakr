@@ -39,7 +39,13 @@ The minimum Control vocabulary should cover:
 - Wake and synchronization hints
 - Compact administrative commands
 
+The channel contract and reserved names exist today, but only delivery acknowledgement has a concrete typed payload. The next implementation milestone makes the remaining accepted Control messages canonical and typed. Capability and protocol negotiation remain authoritative in the authenticated handshake; Control envelopes may carry synchronization or renegotiation hints but cannot override negotiated security state. Route reports are advisory and cannot make a route eligible.
+
 A constrained node may receive Control state eventually rather than continuously.
+
+Relay queue capacity reflects this distinction. Data and Blackboard share an application partition whose occupancy cannot consume configured Control reservations. Control is scheduled first, but only for a bounded burst before an application envelope is selected, so protection of the control plane does not imply starvation of application traffic.
+
+Those partitions and scheduling rules are invariant across relay restarts. Persisted entries retain their immutable channel and original enqueue time; recovery does not infer or reclassify channel semantics. Expired entries are discarded before they can be delivered.
 
 ## Constrained transports
 
@@ -65,6 +71,10 @@ Transport capabilities should eventually describe:
 - Latest-value replacement support
 - Supported representation profiles
 - Supported logical channels
+
+For Milestone 4, capability claims become authoritative only after authentication and transcript binding. Route selection intersects the envelope's channel, representation, payload size, and delivery behavior with the negotiated route capabilities. Direct LAN initially claims ordered foreground/immediate delivery only; the relay remains the queued fallback. A compact payload does not make an otherwise incompatible route eligible, and route selection never changes the envelope's channel, representation, or delivery policy.
+
+Logical acknowledgements and deduplication are route-independent. An envelope attempted on LAN may be retried unchanged through relay after an ambiguous connection failure. Its original Message ID and Session ID allow the receiver to reject a duplicate and acknowledge it without repeating the application operation.
 
 ## Delivery and representation
 
@@ -155,3 +165,14 @@ enum DataDeliveryMode {
 ```
 
 If real-time media becomes a core Beakr feature, a fourth semantic channel named Media or Realtime may be appropriate. Such a channel would be defined by bounded latency, pacing, clock synchronization, selective loss, and avoiding retries for obsolete frames—not merely by payload size.
+
+## Application-semantics roadmap
+
+Milestones 1–5 completed channel identity and the secure delivery substrate. Application semantics proceed in this order:
+
+1. Typed Control payloads and protocol dispatch.
+2. Bounded Data messaging and request/response with durable application delivery state.
+3. Blackboard repositories, journals, snapshots, causal synchronization, and explicit conflict behavior.
+4. Chunked and resumable large Data transfer.
+
+Blackboard is not an alias for durable Data. It has distinct replication, authorization, subscription, compaction, and conflict semantics. Attachments may be transferred through Data and referenced from Blackboard state. See [Next Milestones](Next-Milestones.md) for scope and exit criteria.

@@ -1,0 +1,62 @@
+{
+  "configurations" : [
+    {
+      "id" : "E944A613-CF5C-4C98-BDF6-FFD962664FF2",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "environmentVariableEntries" : [
+      {
+        "key" : "BEAKRNET_RUN_APPLE_NETWORK_INTEGRATION",
+        "value" : "1"
+      },
+      {
+        "key" : "BEAKRNET_RUN_CERTIFICATE_ISSUER_INTEGRATION",
+        "value" : "1"
+      },
+      {
+        "key" : "BEAKRNET_RUN_KEYCHAIN_IDENTITY_INTEGRATION ",
+        "value" : "1"
+      },
+      {
+        "key" : "BEAKRNET_TEST_OPENSSL",
+        "value" : "\/opt\/homebrew\/bin\/openssl"
+      }
+    ],
+    "performanceAntipatternCheckerEnabled" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:",
+      "identifier" : "BeakrNetHandoffLab",
+      "name" : "BeakrNetHandoffLab"
+    },
+    "testInteropMode" : "complete"
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "BeakrNetCoreTests",
+        "name" : "BeakrNetCoreTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "BeakrNetControlTests",
+        "name" : "BeakrNetControlTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "BeakrNetAppleIntegrationTests",
+        "name" : "BeakrNetAppleIntegrationTests"
+      }
+    }
+  ],
+  "version" : 1
+}

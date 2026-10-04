@@ -21,6 +21,10 @@ public struct CredentialAuthority: Sendable {
         privateKey = try P256.Signing.PrivateKey(rawRepresentation: privateKeyRepresentation)
     }
 
+    func signature(forCertificateEnrollmentResponse transcript: Data) throws -> Data {
+        try privateKey.signature(for: transcript).derRepresentation
+    }
+
     public func issue(
         nodeID: NodeID,
         nodePublicKey: Data,

@@ -1,0 +1,31 @@
+{
+  "configurations" : [
+    {
+      "id" : "2A61BBAE-6B3F-43D5-88DA-BE60CC655F00",
+      "name" : "Signed Integration",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "performanceAntipatternCheckerEnabled" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:BeakrNetDemo.xcodeproj",
+      "identifier" : "000000000000000100000000",
+      "name" : "BeakrNetDemo"
+    },
+    "testInteropMode" : "complete"
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:BeakrNetDemo.xcodeproj",
+        "identifier" : "364ECA53307108FC00E3FB7A",
+        "name" : "BeakrNetDemoIntegrationTests"
+      }
+    }
+  ],
+  "version" : 1
+}

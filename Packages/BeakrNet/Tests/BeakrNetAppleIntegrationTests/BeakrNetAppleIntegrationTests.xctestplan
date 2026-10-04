@@ -1,0 +1,34 @@
+{
+  "configurations" : [
+    {
+      "id" : "FED9A08F-71F7-4A52-91D2-978DB241F183",
+      "name" : "Apple Integration",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : false,
+    "environmentVariableEntries" : [
+      {
+        "key" : "BEAKRNET_RUN_APPLE_NETWORK_INTEGRATION",
+        "value" : "1"
+      },
+      {
+        "key" : "BEAKRNET_RUN_CERTIFICATE_ISSUER_INTEGRATION",
+        "value" : "1"
+      },
+      {
+        "key" : "BEAKRNET_RUN_KEYCHAIN_IDENTITY_INTEGRATION",
+        "value" : "1"
+      }
+    ],
+    "performanceAntipatternCheckerEnabled" : true,
+    "testInteropMode" : "complete"
+  },
+  "testTargets" : [
+
+  ],
+  "version" : 1
+}

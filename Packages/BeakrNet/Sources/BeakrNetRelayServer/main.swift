@@ -30,6 +30,11 @@ struct BeakrNetRelayServerMain {
             revocationSnapshot,
             trustedAuthorityPublicKey: authorityPublicKey
         )
+        let queueFileURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["BEAKRNET_RELAY_QUEUE_FILE"] ?? "BeakrNetRelayQueue.json")
+        let offlineQueue = try await PersistentRelayQueue.open(
+            policy: .development,
+            fileURL: queueFileURL
+        )
 
         let server = try RelayServer(
             port: port,
@@ -37,7 +42,8 @@ struct BeakrNetRelayServerMain {
             authorityPublicKey: authorityPublicKey,
             environment: arguments[3],
             revokedCredentialIDs: revokedCredentialIDs,
-            listenOnLAN: listenOnLAN
+            listenOnLAN: listenOnLAN,
+            offlineQueue: offlineQueue
         )
         try await server.run()
     }
@@ -50,7 +56,7 @@ private actor RelayServer {
     private let environment: String
     private let revokedCredentialIDs: Set<UUID>
     private let listenOnLAN: Bool
-    private let offlineQueue = BoundedRelayQueue(policy: .development)
+    private let offlineQueue: PersistentRelayQueue
     private var connections: [NodeID: NWConnection] = [:]
     private var nodeIDsByConnection: [ObjectIdentifier: NodeID] = [:]
     private var authenticationAttempts: [ObjectIdentifier: AuthenticationAttempt] = [:]
@@ -61,13 +67,15 @@ private actor RelayServer {
         authorityPublicKey: Data,
         environment: String,
         revokedCredentialIDs: Set<UUID>,
-        listenOnLAN: Bool
+        listenOnLAN: Bool,
+        offlineQueue: PersistentRelayQueue
     ) throws {
         self.port = port
         self.authorityPublicKey = authorityPublicKey
         self.environment = environment
         self.revokedCredentialIDs = revokedCredentialIDs
         self.listenOnLAN = listenOnLAN
+        self.offlineQueue = offlineQueue
         let parameters = try RelayTLSConfiguration.parameters(preSharedKey: preSharedKey)
         if listenOnLAN {
             listener = try NWListener(using: parameters, on: port)
@@ -163,7 +171,7 @@ private actor RelayServer {
                 over: connection
             )
 
-            let queued = await offlineQueue.drain(for: nodeID)
+            let queued = try await offlineQueue.drain(for: nodeID)
             for queuedEnvelope in queued {
                 try await NetworkConnectionIO.send(
                     .envelope(queuedEnvelope),
@@ -179,7 +187,7 @@ private actor RelayServer {
             if let destination = connections[envelope.destinationNodeID] {
                 try await NetworkConnectionIO.send(outbound, over: destination)
             } else {
-                await offlineQueue.enqueue(
+                try await offlineQueue.enqueue(
                     envelope,
                     for: envelope.destinationNodeID
                 )

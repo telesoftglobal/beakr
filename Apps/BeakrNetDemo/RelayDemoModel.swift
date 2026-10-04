@@ -11,6 +11,8 @@ final class RelayDemoModel {
     var relayPort = "7878"
     var preSharedKeyBase64 = ""
     var credentialJSON = ""
+    var authorityPublicKeyBase64 = ""
+    var controlPlaneURL = ""
     var destinationNodeID = "" {
         didSet {
             configurationStore.saveDestinationNodeID(destinationNodeID)
@@ -30,6 +32,7 @@ final class RelayDemoModel {
     private(set) var sentMessageCount = 0
     private(set) var receivedMessageCount = 0
     private(set) var credentialExpiresAt: Date?
+    let lifecycle = CertificateLifecycleCoordinator()
 
     var isConnected: Bool {
         transport != nil
@@ -41,7 +44,9 @@ final class RelayDemoModel {
             relayPort: relayPort,
             preSharedKeyBase64: preSharedKeyBase64,
             credentialJSON: credentialJSON,
-            destinationNodeID: destinationNodeID
+            destinationNodeID: destinationNodeID,
+            authorityPublicKeyBase64: authorityPublicKeyBase64,
+            controlPlaneURL: controlPlaneURL
         )
     }
 
@@ -78,6 +83,8 @@ final class RelayDemoModel {
             relayPort = configuration.relayPort
             preSharedKeyBase64 = configuration.preSharedKeyBase64
             credentialJSON = configuration.credentialJSON
+            authorityPublicKeyBase64 = configuration.authorityPublicKeyBase64
+            controlPlaneURL = configuration.controlPlaneURL
             destinationNodeID = configuration.destinationNodeID
             updateCredentialExpiration(from: configuration.credentialJSON)
         } catch {
@@ -92,6 +99,15 @@ final class RelayDemoModel {
             publicKeyBase64 = identity.publicKeyRepresentation.base64EncodedString()
         } catch {
             status = "Identity error: \(error.localizedDescription)"
+        }
+
+        Task {
+            await lifecycle.start(
+                authorityPublicKeyBase64: authorityPublicKeyBase64,
+                controlPlaneURL: controlPlaneURL,
+                identity: identity,
+                credential: configuredCredential
+            )
         }
     }
 
@@ -150,7 +166,10 @@ final class RelayDemoModel {
             relayPort = "7878"
             preSharedKeyBase64 = ""
             credentialJSON = ""
+            authorityPublicKeyBase64 = ""
+            controlPlaneURL = ""
             destinationNodeID = ""
+            lifecycle.stop()
             record("Saved configuration cleared", kind: .status)
         } catch {
             record("Could not clear configuration: \(error.localizedDescription)", kind: .error)
@@ -176,12 +195,14 @@ final class RelayDemoModel {
                 port: port,
                 preSharedKey: preSharedKey,
                 identity: identity,
-                credential: credential
+                credential: credential,
+                trustedAuthorityPublicKey: Data(base64Encoded: authorityPublicKeyBase64)
             )
             let transport = RelayTransport(configuration: configuration)
             status = "Connecting"
             try await transport.connect()
             self.transport = transport
+            await lifecycle.register(transport)
             status = "Online"
             lastConnectedAt = .now
             record("Authenticated with relay", kind: .status)
@@ -199,11 +220,34 @@ final class RelayDemoModel {
         diagnosticTask?.cancel()
         receiveTask = nil
         diagnosticTask = nil
-        await transport?.close()
+        if let transport {
+            await lifecycle.unregister(consumerID: transport.id)
+            await transport.close()
+        }
         transport = nil
         status = "Offline"
         lastDisconnectedAt = .now
         record("Disconnected", kind: .status)
+    }
+
+    private var configuredCredential: NodeCredential? {
+        try? JSONDecoder().decode(
+            NodeCredential.self,
+            from: Data(credentialJSON.utf8)
+        )
+    }
+
+    func saveAndRestartLifecycle() async {
+        saveConfiguration()
+        await lifecycle.start(
+            authorityPublicKeyBase64: authorityPublicKeyBase64,
+            controlPlaneURL: controlPlaneURL,
+            identity: identity,
+            credential: configuredCredential
+        )
+        if let transport {
+            await lifecycle.register(transport)
+        }
     }
 
     func sendPing() async {

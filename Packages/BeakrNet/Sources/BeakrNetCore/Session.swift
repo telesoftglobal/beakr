@@ -140,6 +140,16 @@ public actor BeakrNetSession {
         }
     }
 
+    @discardableResult
+    public func removePendingDelivery(
+        for messageID: MessageID,
+        reason: PendingDeliveryRemovalReason
+    ) -> Bool {
+        guard pendingDeliveries.removeValue(forKey: messageID) != nil else { return false }
+        diagnosticHistory.append(.deliveryRemoved(messageID: messageID, reason: reason))
+        return true
+    }
+
     public func accept(_ envelope: BeakrNetEnvelope, now: Date = Date()) throws -> SessionAcceptance {
         guard envelope.sessionID == id else { return .wrongSession }
         guard envelope.destinationNodeID == localNodeID else { return .wrongDestination }

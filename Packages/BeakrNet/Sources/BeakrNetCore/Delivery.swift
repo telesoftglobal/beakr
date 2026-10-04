@@ -29,6 +29,10 @@ public struct PendingDelivery: Equatable, Sendable {
     }
 }
 
+public enum PendingDeliveryRemovalReason: String, Codable, Equatable, Sendable {
+    case expired
+}
+
 public enum SessionDiagnosticEvent: Equatable, Sendable {
     case transportBound(TransportBinding)
     case transportUnbound(transportID: TransportID)
@@ -36,6 +40,7 @@ public enum SessionDiagnosticEvent: Equatable, Sendable {
     case deliveryQueued(messageID: MessageID, sequenceNumber: UInt64)
     case deliveryAttempted(messageID: MessageID, attempt: Int)
     case deliveryAcknowledged(messageID: MessageID)
+    case deliveryRemoved(messageID: MessageID, reason: PendingDeliveryRemovalReason)
     case envelopeAccepted(messageID: MessageID, sequenceNumber: UInt64)
     case duplicateRejected(messageID: MessageID)
 }

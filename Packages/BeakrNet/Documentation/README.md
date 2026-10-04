@@ -4,15 +4,20 @@ BeakrNet is an independent experimental networking substrate for Beakr. It explo
 
 The package deliberately has no dependency on the existing Beakr prototype, XYZ replication models, or application data stores.
 
-## Initial scope
+## Implemented foundation
 
 - Stable node, session, message, and transport identifiers
 - Transport-neutral envelopes and capabilities
 - Logical session state and transport bindings
 - Duplicate-message detection
 - An in-memory transport for deterministic tests
+- Bounded persistent relay queues with reserved Control capacity
+- Authenticated relay and Bonjour/Network-framework LAN transports
+- Deterministic route selection and relay/LAN handoff
+- Certificate enrollment, renewal, rotation, recovery, and revocation distribution
+- Opt-in signed Apple-platform integration coverage
 
-Bonjour, Internet relay, WatchConnectivity, production credentials, and application integration are later milestones.
+The transport meaning of Control, Data, and Blackboard is implemented. Their application-level protocols are the next milestones. WatchConnectivity, Bluetooth Low Energy, application rules, public APIs, and user-interface integration remain later work.
 
 `BeakrNetRelayTransport` now provides the reusable encrypted relay client used by the command-line node, including credential authentication, incoming-envelope delivery, connection diagnostics, and automatic reconnect with backoff.
 
@@ -48,4 +53,6 @@ swift run BeakrNetNodeCLI receive /tmp/beakrnet-node-b.key 10 /tmp/beakrnet-rela
 swift run BeakrNetNodeCLI send /tmp/beakrnet-node-a.key 10 <node-b-uuid> /tmp/beakrnet-relay.psk /tmp/beakrnet-node-a.credential
 ```
 
-The relay uses TLS with a development PSK and separately authenticates possession of a self-sovereign node identity. It does not yet use authority-issued credentials and must not be exposed as a production service.
+The relay command-line lab uses TLS with a development PSK and separately authenticates authority-issued node credentials and possession of the node identity. The shared development PSK, command-line authority material, and laboratory server are not a production deployment configuration.
+
+See [Implementation Plan](Implementation-Plan.md) for completed work, [Next Milestones](Next-Milestones.md) for the ordered roadmap, and [Package Architecture and Testing](Package-Architecture-and-Testing.md) for dependency and validation boundaries.

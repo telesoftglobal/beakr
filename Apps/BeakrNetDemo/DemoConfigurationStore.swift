@@ -14,6 +14,8 @@ struct DemoConfiguration {
     let preSharedKeyBase64: String
     let credentialJSON: String
     let destinationNodeID: String
+    let authorityPublicKeyBase64: String
+    let controlPlaneURL: String
 }
 
 struct DemoConfigurationStore {
@@ -27,6 +29,8 @@ struct DemoConfigurationStore {
         static let preSharedKey = "preSharedKey"
         static let credential = "credential"
         static let savedPeers = "savedPeers"
+        static let authorityPublicKey = "authorityPublicKey"
+        static let controlPlaneURL = "controlPlaneURL"
     }
 
     func load() throws -> DemoConfiguration {
@@ -35,7 +39,9 @@ struct DemoConfigurationStore {
             relayPort: defaults.string(forKey: Key.relayPort) ?? "7878",
             preSharedKeyBase64: try keychain.load(account: Key.preSharedKey) ?? "",
             credentialJSON: try keychain.load(account: Key.credential) ?? "",
-            destinationNodeID: defaults.string(forKey: Key.destinationNodeID) ?? ""
+            destinationNodeID: defaults.string(forKey: Key.destinationNodeID) ?? "",
+            authorityPublicKeyBase64: defaults.string(forKey: Key.authorityPublicKey) ?? "",
+            controlPlaneURL: defaults.string(forKey: Key.controlPlaneURL) ?? ""
         )
     }
 
@@ -45,6 +51,8 @@ struct DemoConfigurationStore {
         saveDestinationNodeID(configuration.destinationNodeID)
         try keychain.save(configuration.preSharedKeyBase64, account: Key.preSharedKey)
         try keychain.save(configuration.credentialJSON, account: Key.credential)
+        defaults.set(configuration.authorityPublicKeyBase64, forKey: Key.authorityPublicKey)
+        defaults.set(configuration.controlPlaneURL, forKey: Key.controlPlaneURL)
     }
 
     func saveDestinationNodeID(_ nodeID: String) {
@@ -67,6 +75,8 @@ struct DemoConfigurationStore {
         defaults.removeObject(forKey: Key.relayHost)
         defaults.removeObject(forKey: Key.relayPort)
         defaults.removeObject(forKey: Key.destinationNodeID)
+        defaults.removeObject(forKey: Key.authorityPublicKey)
+        defaults.removeObject(forKey: Key.controlPlaneURL)
         try keychain.delete(account: Key.preSharedKey)
         try keychain.delete(account: Key.credential)
     }

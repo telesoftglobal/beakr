@@ -5,7 +5,7 @@ import BeakrNetSecurity
 
 @main
 struct BeakrNetCredentialTool {
-    static func main() throws {
+    static func main() async throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
         guard let command = arguments.first else {
             printUsage()
@@ -146,6 +146,42 @@ struct BeakrNetCredentialTool {
             )
             print("Revocation snapshot is valid with \(revoked.count) entries")
 
+#if os(macOS)
+        case "issue-lan-certificate":
+            guard arguments.count == 9,
+                  let nodeUUID = UUID(uuidString: arguments[4]),
+                  let publicKey = Data(base64Encoded: arguments[5]),
+                  let validity = TimeInterval(arguments[8]),
+                  validity > 0 else { printUsage(); return }
+            let nodeID = NodeID(rawValue: nodeUUID)
+            guard NodeIdentity.nodeID(forPublicKeyRepresentation: publicKey) == nodeID else {
+                throw CredentialToolError.nodeIDDoesNotMatchPublicKey
+            }
+            let issuer = OpenSSLDevelopmentCertificateIssuer(
+                executableURL: URL(fileURLWithPath: arguments[1]),
+                authorityCertificateURL: URL(fileURLWithPath: arguments[2]),
+                authorityPrivateKeyURL: URL(fileURLWithPath: arguments[3])
+            )
+            let material = try await issuer.issueCertificate(
+                nodeID: nodeID,
+                nodePublicKey: publicKey,
+                validity: validity,
+                now: Date()
+            )
+            try material.leafCertificateDER.write(
+                to: URL(fileURLWithPath: arguments[6]),
+                options: .atomic
+            )
+            guard let authorityDER = material.certificateChainDER.first else {
+                throw CredentialToolError.missingCertificateChain
+            }
+            try authorityDER.write(
+                to: URL(fileURLWithPath: arguments[7]),
+                options: .atomic
+            )
+            print("Issued LAN certificate for \(nodeID.rawValue.uuidString)")
+#endif
+
         default:
             printUsage()
         }
@@ -161,9 +197,13 @@ struct BeakrNetCredentialTool {
         print("  BeakrNetCredentialTool create-revocations <authority-private-key> <snapshot>")
         print("  BeakrNetCredentialTool revoke <authority-private-key> <credential> <snapshot> <reason>")
         print("  BeakrNetCredentialTool verify-revocations <snapshot> <authority-public-key>")
+#if os(macOS)
+        print("  BeakrNetCredentialTool issue-lan-certificate <openssl> <ca-cert-pem> <ca-key-pem> <node-id> <public-key-base64> <leaf-der> <chain-der> <validity-seconds>")
+#endif
     }
 }
 
 enum CredentialToolError: Error {
     case nodeIDDoesNotMatchPublicKey
+    case missingCertificateChain
 }

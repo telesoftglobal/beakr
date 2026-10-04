@@ -10,6 +10,8 @@ public struct RelayTransportConfiguration: Sendable {
     public let preSharedKey: Data
     public let identity: NodeIdentity
     public let credential: NodeCredential
+    public let trustedAuthorityPublicKey: Data?
+    public let now: @Sendable () -> Date
     public let reconnectDelays: [TimeInterval]
     public let connectionAttemptTimeout: TimeInterval
 
@@ -19,6 +21,8 @@ public struct RelayTransportConfiguration: Sendable {
         preSharedKey: Data,
         identity: NodeIdentity,
         credential: NodeCredential,
+        trustedAuthorityPublicKey: Data? = nil,
+        now: @escaping @Sendable () -> Date = Date.init,
         reconnectDelays: [TimeInterval] = [0.25, 0.5, 1, 2, 5],
         connectionAttemptTimeout: TimeInterval = 3
     ) throws {
@@ -36,6 +40,8 @@ public struct RelayTransportConfiguration: Sendable {
         self.preSharedKey = preSharedKey
         self.identity = identity
         self.credential = credential
+        self.trustedAuthorityPublicKey = trustedAuthorityPublicKey
+        self.now = now
         self.reconnectDelays = reconnectDelays
         self.connectionAttemptTimeout = connectionAttemptTimeout
     }
@@ -67,11 +73,14 @@ public enum RelayTransportError: Error, Equatable, Sendable {
     case unexpectedRelayMessage
     case connectionCancelled
     case connectionTimedOut
+    case missingTrustedAuthority
+    case localCredentialRevoked
 }
 
-public actor RelayTransport: BeakrNetTransport {
+public actor RelayTransport: BeakrNetTransport, RevocationSnapshotConsumer {
     public nonisolated let id: TransportID
     public nonisolated let kind = TransportKind.relay
+    public nonisolated var revocationConsumerID: TransportID { id }
     public nonisolated let capabilities = TransportCapabilities(
         preservesOrder: true,
         supportsImmediateDelivery: true,
@@ -127,6 +136,23 @@ public actor RelayTransport: BeakrNetTransport {
         }
         return await withCheckedContinuation { continuation in
             waitingReceivers.append(continuation)
+        }
+    }
+
+    public func installRevocationSnapshot(
+        _ snapshot: CredentialRevocationSnapshot
+    ) async throws {
+        guard let trustedAuthorityPublicKey = configuration.trustedAuthorityPublicKey else {
+            throw RelayTransportError.missingTrustedAuthority
+        }
+        let revoked = try RevocationVerifier.verify(
+            snapshot,
+            trustedAuthorityPublicKey: trustedAuthorityPublicKey,
+            now: configuration.now()
+        )
+        guard !revoked.contains(configuration.credential.claims.credentialID) else {
+            await close()
+            throw RelayTransportError.localCredentialRevoked
         }
     }
 

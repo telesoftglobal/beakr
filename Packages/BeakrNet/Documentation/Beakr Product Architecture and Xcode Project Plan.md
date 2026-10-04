@@ -30,7 +30,7 @@ A node should select the best available route without changing the application p
 
 4. Persistent offline queue until a route becomes available
 
-The current implementation primarily provides authenticated relay transport. Direct LAN discovery, automatic route selection, offline queues, and Blackboard replication remain future work.
+The current implementation provides authenticated relay and direct-LAN transport, automatic route selection, bounded persistent relay queues, and relay/LAN handoff. Application-facing durable node queues and Blackboard replication remain future work.
 
 ## Beakr channels
 
@@ -42,9 +42,7 @@ The product model requires three explicit logical channels:
 | Data | Point-to-point application messages and transfers | Reliable delivery, acknowledgement, retry, and store-and-forward |
 | Blackboard | Durable shared-state publication and synchronization | Versioned, subscribable, persistent, and conflict-aware |
 
-The current relay does not yet implement these channel semantics. It routes generic envelopes by source and destination Node ID and treats payloads as opaque bytes with a payload-type string.
-
-The channel should become explicit envelope metadata. The relay may apply delivery policy based on the channel while continuing to treat application payload contents as opaque.
+Channel, representation, and delivery policy are now explicit immutable envelope metadata. The relay reserves bounded Control capacity and schedules a bounded Control burst without interpreting application payload contents. Typed Control payloads, application Data operations, and Blackboard replication semantics remain planned work.
 
 ## Current BeakrNet components
 

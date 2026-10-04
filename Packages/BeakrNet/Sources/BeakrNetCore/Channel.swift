@@ -1,12 +1,12 @@
 import Foundation
 
-public enum BeakrNetChannel: String, Codable, CaseIterable, Sendable {
+public enum BeakrNetChannel: String, Codable, CaseIterable, Hashable, Sendable {
     case control
     case data
     case blackboard
 }
 
-public enum RepresentationProfile: String, Codable, Sendable {
+public enum RepresentationProfile: String, Codable, CaseIterable, Hashable, Sendable {
     case full
     case compact
 }
@@ -39,7 +39,10 @@ public enum ControlPayloadType: String, Codable, CaseIterable, Sendable {
     case protocolVersion = "beakrnet.protocol-version"
     case routeAvailability = "beakrnet.route-availability"
     case keepalive = "beakrnet.keepalive"
+    case sessionLiveness = "beakrnet.session-liveness"
     case queuePressure = "beakrnet.queue-pressure"
+    case synchronizationHint = "beakrnet.synchronization-hint"
+    case protocolError = "beakrnet.protocol-error"
 }
 
 public enum EnvelopeValidationError: Error, Equatable, Sendable {
