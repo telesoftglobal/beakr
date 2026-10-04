@@ -1,8 +1,10 @@
 import Foundation
 import Testing
+import BeakrNetAuthority
 import BeakrNetCore
 import BeakrNetData
 import BeakrNetHost
+import BeakrNetSecurity
 @testable import Beakr
 
 @MainActor
@@ -72,6 +74,32 @@ struct BeakrTests {
         #expect(model.nodeID == nil)
         #expect(model.state == .failed)
     }
+
+    @Test("Verified development authority configuration advances bootstrap")
+    func authorityConfiguration() async throws {
+        let identity = NodeIdentity()
+        let authority = CredentialAuthority()
+        let credential = try authority.issue(
+            nodeID: identity.nodeID,
+            nodePublicKey: identity.publicKeyRepresentation,
+            environment: "development",
+            validity: 3_600,
+            serviceScopes: ["lan"]
+        )
+        let model = NodeBootstrapModel(
+            identityLoader: FixedIdentityLoader(nodeID: identity.nodeID),
+            configurationStore: MemoryAuthorityConfigurationStore()
+        )
+        await model.start()
+        model.controlPlaneURL = "https://authority.example"
+        model.authorityPublicKeyBase64 = authority.publicKeyRepresentation.base64EncodedString()
+        model.credentialJSON = String(decoding: try JSONEncoder().encode(credential), as: UTF8.self)
+
+        model.saveDevelopmentConfiguration()
+
+        #expect(model.state == .identityReady)
+        #expect(model.credentialJSON.isEmpty)
+    }
 }
 
 private actor RecordingMessagingService: HostMessagingService {
@@ -99,4 +127,9 @@ private struct FixedIdentityLoader: NodeIdentityLoading {
 
 private struct FailingIdentityLoader: NodeIdentityLoading {
     func loadOrCreateNodeID() throws -> NodeID { throw BeakrMessagingSetupError.notConfigured }
+}
+
+private struct MemoryAuthorityConfigurationStore: DevelopmentAuthorityConfigurationStoring {
+    func load() throws -> DevelopmentAuthorityConfiguration? { nil }
+    func save(_ configuration: DevelopmentAuthorityConfiguration) throws {}
 }

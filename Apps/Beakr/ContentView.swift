@@ -28,6 +28,14 @@ struct ContentView: View {
                     state: bootstrap.state,
                     statusMessage: bootstrap.statusMessage
                 )
+                if bootstrap.state == .needsConfiguration {
+                    DevelopmentAuthoritySection(
+                        controlPlaneURL: $bootstrap.controlPlaneURL,
+                        authorityPublicKeyBase64: $bootstrap.authorityPublicKeyBase64,
+                        credentialJSON: $bootstrap.credentialJSON,
+                        save: bootstrap.saveDevelopmentConfiguration
+                    )
+                }
                 MessageStatusSection(statusMessage: model.statusMessage)
                 MessageComposerSection(
                     destinationText: $model.destinationText,
@@ -78,6 +86,38 @@ private extension NodeBootstrapState {
             "checkmark.shield"
         case .failed:
             "exclamationmark.shield"
+        }
+    }
+}
+
+private struct DevelopmentAuthoritySection: View {
+    @Binding var controlPlaneURL: String
+    @Binding var authorityPublicKeyBase64: String
+    @Binding var credentialJSON: String
+    let save: () -> Void
+
+    var body: some View {
+        Section {
+            TextField("HTTPS Control-Plane URL", text: $controlPlaneURL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityLabel("HTTPS Control-Plane URL")
+
+            TextField("Authority Public Key (Base64)", text: $authorityPublicKeyBase64)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityLabel("Authority Public Key")
+
+            SecureField("Authority-Issued Credential JSON", text: $credentialJSON)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityLabel("Authority-Issued Credential JSON")
+
+            Button("Verify and Save", systemImage: "checkmark.shield", action: save)
+        } header: {
+            Text("Development Authority")
+        } footer: {
+            Text("Development configuration only. The credential is stored in Keychain; private identity keys never leave Keychain storage.")
         }
     }
 }
