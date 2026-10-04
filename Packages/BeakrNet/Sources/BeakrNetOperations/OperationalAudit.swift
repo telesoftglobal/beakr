@@ -36,3 +36,27 @@ public actor OperationalAuditJournal {
         events.filter { now.timeIntervalSince($0.timestamp) <= retention }
     }
 }
+
+public enum OperationalMetric: String, CaseIterable, Codable, Sendable {
+    case admitted
+    case rejected
+    case keyUnavailable = "key-unavailable"
+    case staleRevocation = "stale-revocation"
+    case restoreRejected = "restore-rejected"
+    case rolloutRetained = "rollout-retained"
+}
+
+public actor OperationalTelemetry {
+    private var counts: [OperationalMetric: UInt64] = [:]
+
+    public init() {}
+
+    public func increment(_ metric: OperationalMetric, by amount: UInt64 = 1) {
+        let (sum, overflow) = counts[metric, default: 0].addingReportingOverflow(amount)
+        counts[metric] = overflow ? .max : sum
+    }
+
+    public func snapshot() -> [OperationalMetric: UInt64] {
+        counts
+    }
+}
