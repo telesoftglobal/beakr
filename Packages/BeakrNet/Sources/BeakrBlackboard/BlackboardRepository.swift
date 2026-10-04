@@ -102,6 +102,29 @@ public struct BlackboardChange: Equatable, Sendable {
     public let cursor: BlackboardCursor
 }
 
+public struct BlackboardPersistedSpace: Codable, Equatable, Sendable {
+    public let spaceID: BlackboardSpaceID
+    public let name: String
+    public let membershipRevision: UInt64
+    public let members: [BlackboardMember]
+    public let compactionGeneration: UInt64
+    public let compactedFrontier: BlackboardFrontier
+    public let frontier: BlackboardFrontier
+    public let records: [BlackboardRecord]
+    public let journal: [BlackboardOperation]
+}
+
+public struct BlackboardRepositoryState: Codable, Equatable, Sendable {
+    public static let currentFormatVersion = 1
+    public let formatVersion: Int
+    public let spaces: [BlackboardPersistedSpace]
+
+    public init(formatVersion: Int = Self.currentFormatVersion, spaces: [BlackboardPersistedSpace]) {
+        self.formatVersion = formatVersion
+        self.spaces = spaces
+    }
+}
+
 public actor BlackboardRepository {
     public typealias Subscriber = @Sendable (BlackboardChange) -> Void
 
@@ -110,6 +133,7 @@ public actor BlackboardRepository {
         var membershipRevision: UInt64
         var members: [NodeID: BlackboardMemberRole]
         var compactionGeneration: UInt64 = 0
+        var compactedFrontier = BlackboardFrontier()
         var frontier = BlackboardFrontier()
         var records: [BlackboardRecordID: [BlackboardRecordVersion]] = [:]
         var journal: [BlackboardOperation] = []
@@ -126,6 +150,35 @@ public actor BlackboardRepository {
     private var subscriptions: [BlackboardSubscriptionID: Subscription] = [:]
 
     public init(policy: BlackboardPolicy = BlackboardPolicy()) { self.policy = policy }
+
+    public init(restoring state: BlackboardRepositoryState, policy: BlackboardPolicy = BlackboardPolicy()) throws {
+        guard state.formatVersion == BlackboardRepositoryState.currentFormatVersion else {
+            throw BlackboardRepositoryError.unsupportedVersion(UInt16(clamping: state.formatVersion))
+        }
+        guard state.spaces.count <= policy.maximumSpaces else { throw BlackboardRepositoryError.resourceLimit }
+        self.policy = policy
+        for persisted in state.spaces {
+            guard !persisted.name.isEmpty, persisted.members.count <= policy.maximumMembersPerSpace,
+                  persisted.records.count <= policy.maximumRecordsPerSpace,
+                  persisted.journal.count <= policy.maximumJournalOperations,
+                  persisted.frontier.dominates(persisted.compactedFrontier) else {
+                throw BlackboardRepositoryError.invalidOperation
+            }
+            let members = Dictionary(uniqueKeysWithValues: persisted.members.map { ($0.nodeID, $0.role) })
+            guard members.count == persisted.members.count, members.values.contains(.owner) else {
+                throw BlackboardRepositoryError.invalidOperation
+            }
+            let records = Dictionary(uniqueKeysWithValues: persisted.records.map { ($0.recordID, $0.versions) })
+            guard records.count == persisted.records.count else { throw BlackboardRepositoryError.invalidOperation }
+            spaces[persisted.spaceID] = SpaceState(
+                name: persisted.name, membershipRevision: persisted.membershipRevision, members: members,
+                compactionGeneration: persisted.compactionGeneration,
+                compactedFrontier: persisted.compactedFrontier, frontier: persisted.frontier,
+                records: records, journal: persisted.journal,
+                operationIDs: Set(persisted.journal.map(\.operationID)).union(records.values.flatMap { $0.map(\.operationID) })
+            )
+        }
+    }
 
     public func createSpace(id: BlackboardSpaceID = BlackboardSpaceID(), name: String, owner: NodeID) throws {
         guard !name.isEmpty, name.utf8.count <= 128 else { throw BlackboardRepositoryError.invalidName }
@@ -226,6 +279,39 @@ public actor BlackboardRepository {
     }
 
     public func cancelSubscription(_ id: BlackboardSubscriptionID) { subscriptions.removeValue(forKey: id) }
+
+    public func compact(
+        spaceID: BlackboardSpaceID,
+        through frontier: BlackboardFrontier,
+        authorizedNodeID: NodeID
+    ) throws {
+        guard var space = spaces[spaceID] else { throw BlackboardRepositoryError.unknownSpace }
+        guard space.members[authorizedNodeID] == .owner else { throw BlackboardRepositoryError.unauthorized }
+        guard frontier.dominates(space.compactedFrontier), space.frontier.dominates(frontier) else {
+            throw BlackboardRepositoryError.compactionBoundaryMismatch
+        }
+        space.journal.removeAll { frontier.observes($0.dot) }
+        space.records = space.records.filter { _, versions in
+            !(versions.count == 1 && versions[0].isTombstone && frontier.observes(versions[0].dot))
+        }
+        space.compactedFrontier = frontier
+        space.compactionGeneration += 1
+        spaces[spaceID] = space
+    }
+
+    public func exportState() -> BlackboardRepositoryState {
+        BlackboardRepositoryState(spaces: spaces.map { spaceID, space in
+            BlackboardPersistedSpace(
+                spaceID: spaceID, name: space.name, membershipRevision: space.membershipRevision,
+                members: space.members.map { .init(nodeID: $0.key, role: $0.value) }
+                    .sorted { $0.nodeID.rawValue.uuidString < $1.nodeID.rawValue.uuidString },
+                compactionGeneration: space.compactionGeneration,
+                compactedFrontier: space.compactedFrontier, frontier: space.frontier,
+                records: space.records.map { .init(recordID: $0.key, versions: $0.value) }.sorted { $0.recordID < $1.recordID },
+                journal: space.journal
+            )
+        }.sorted { $0.spaceID < $1.spaceID })
+    }
 
     private func readableSpace(_ id: BlackboardSpaceID, nodeID: NodeID) throws -> SpaceState {
         guard let space = spaces[id] else { throw BlackboardRepositoryError.unknownSpace }
