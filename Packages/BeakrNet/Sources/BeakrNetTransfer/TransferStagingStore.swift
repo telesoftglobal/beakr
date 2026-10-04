@@ -96,6 +96,11 @@ public actor TransferStagingStore {
         return ranges
     }
 
+    public func manifest(for id: TransferID) throws -> TransferManifest {
+        guard let entry = entries[id] else { throw TransferStagingError.unknownTransfer }
+        return entry.manifest
+    }
+
     public func finalize(_ id: TransferID) throws -> URL {
         guard let entry = entries[id] else { throw TransferStagingError.unknownTransfer }
         guard entry.received.count == Int(entry.manifest.chunkCount) else { throw TransferStagingError.incomplete }
