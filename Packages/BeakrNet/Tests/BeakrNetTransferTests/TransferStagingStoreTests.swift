@@ -65,6 +65,23 @@ struct TransferStagingStoreTests {
         await #expect(throws: TransferStagingError.unknownTransfer) { try await store.manifest(for: expiring.transferID) }
     }
 
+    @Test("A wrong final digest never publishes an artifact")
+    func finalDigestFailure() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = Date(timeIntervalSince1970: 1_000), bytes = Data("abc".utf8), id = TransferID()
+        var manifest = makeManifest(id: id, bytes: bytes, now: now)
+        manifest = .init(transferID: id, context: manifest.context, byteCount: manifest.byteCount,
+                         chunkSize: manifest.chunkSize, chunkCount: manifest.chunkCount,
+                         contentDigest: Data(repeating: 0, count: 32), mediaType: manifest.mediaType,
+                         expiresAt: manifest.expiresAt)
+        let store = try await TransferStagingStore.open(rootURL: root, now: now)
+        try await store.admit(manifest, now: now)
+        _ = try await store.receive(chunk(id: id, bytes: bytes), now: now)
+        await #expect(throws: TransferStagingError.integrityFailure) { try await store.finalize(id) }
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(id.rawValue.uuidString).appendingPathComponent("completed.data").path))
+    }
+
     private func makeManifest(id: TransferID, bytes: Data, now: Date, lifetime: TimeInterval = 60) -> TransferManifest {
         .init(transferID: id, context: .init(sessionID: SessionID(), sourceNodeID: NodeID(), destinationNodeID: NodeID()),
               byteCount: UInt64(bytes.count), chunkSize: UInt32(bytes.count), chunkCount: 1,
