@@ -26,31 +26,39 @@ public struct BonjourAdvertisement: Equatable, Sendable {
 
 public struct BonjourDiscoveryMetadata: Equatable, Sendable {
     public static let currentVersion = 1
+    public static let maximumDisplayNameUTF8Length = 128
 
     public let version: Int
     public let protocolMajorVersion: Int
     public let nodeIDHint: NodeID
     public let advertisementNonce: Data
+    public let displayName: String?
 
     public init(
         version: Int = Self.currentVersion,
         protocolMajorVersion: Int = TransportCapabilities.currentProtocolVersion,
         nodeIDHint: NodeID,
-        advertisementNonce: Data
+        advertisementNonce: Data,
+        displayName: String? = nil
     ) {
         self.version = version
         self.protocolMajorVersion = protocolMajorVersion
         self.nodeIDHint = nodeIDHint
         self.advertisementNonce = advertisementNonce
+        self.displayName = displayName
     }
 
     public var txtRecord: [String: String] {
-        [
+        var record = [
             "v": String(version),
             "pv": String(protocolMajorVersion),
             "node": nodeIDHint.rawValue.uuidString.lowercased(),
             "nonce": advertisementNonce.base64EncodedString()
         ]
+        if let displayName {
+            record["name"] = displayName
+        }
+        return record
     }
 }
 
@@ -60,6 +68,7 @@ public enum BonjourMetadataError: Error, Equatable, Sendable {
     case invalidProtocolVersion
     case invalidNodeID
     case invalidAdvertisementNonce
+    case invalidDisplayName
 }
 
 public enum BonjourMetadataParser {
@@ -79,11 +88,17 @@ public enum BonjourMetadataParser {
         guard let nonce = Data(base64Encoded: nonceValue), nonce.count == 32 else {
             throw BonjourMetadataError.invalidAdvertisementNonce
         }
+        let displayName = record["name"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let displayName,
+           displayName.isEmpty || displayName.utf8.count > BonjourDiscoveryMetadata.maximumDisplayNameUTF8Length {
+            throw BonjourMetadataError.invalidDisplayName
+        }
         return BonjourDiscoveryMetadata(
             version: version,
             protocolMajorVersion: protocolVersion,
             nodeIDHint: NodeID(rawValue: nodeUUID),
-            advertisementNonce: nonce
+            advertisementNonce: nonce,
+            displayName: displayName
         )
     }
 }
@@ -103,6 +118,7 @@ public struct BonjourDiscoveryCandidate: Equatable, Sendable {
     public let nodeIDHint: NodeID
     public let protocolMajorVersion: Int
     public let interfaceNames: Set<String>
+    public let displayName: String?
 
     public init(advertisement: BonjourAdvertisement, metadata: BonjourDiscoveryMetadata) {
         key = BonjourDiscoveryKey(
@@ -112,6 +128,7 @@ public struct BonjourDiscoveryCandidate: Equatable, Sendable {
         nodeIDHint = metadata.nodeIDHint
         protocolMajorVersion = metadata.protocolMajorVersion
         interfaceNames = advertisement.interfaceNames
+        displayName = metadata.displayName
     }
 }
 
@@ -213,25 +230,39 @@ public enum BonjourDiagnostic: Equatable, Sendable {
 public typealias BonjourDiagnosticSink = @Sendable (BonjourDiagnostic) -> Void
 
 public actor BonjourDiscoveryCoordinator {
+    public typealias ConnectionHandler = @Sendable (BonjourDiscoveryCandidate, any BonjourConnection) -> Void
+    public typealias ConnectionEndedHandler = @Sendable (UUID) -> Void
+
     private let localNodeID: NodeID
     private let browser: any BonjourBrowsing
     private let connectionFactory: any BonjourConnectionFactory
     private let diagnosticSink: BonjourDiagnosticSink
+    private let connectionHandler: ConnectionHandler
+    private let connectionEndedHandler: ConnectionEndedHandler
+    private let reconnectDelay: Duration
     private var generation: UInt64 = 0
     private var candidates: [BonjourDiscoveryKey: BonjourDiscoveryCandidate] = [:]
     private var keysByEndpoint: [BonjourEndpointID: BonjourDiscoveryKey] = [:]
     private var connections: [BonjourDiscoveryKey: any BonjourConnection] = [:]
+    private var handedOffConnectionIDs: Set<UUID> = []
+    private var reconnectTasks: [BonjourDiscoveryKey: Task<Void, Never>] = [:]
 
     public init(
         localNodeID: NodeID,
         browser: any BonjourBrowsing,
         connectionFactory: any BonjourConnectionFactory,
-        diagnosticSink: @escaping BonjourDiagnosticSink = { _ in }
+        reconnectDelay: Duration = .seconds(1),
+        diagnosticSink: @escaping BonjourDiagnosticSink = { _ in },
+        connectionHandler: @escaping ConnectionHandler = { _, _ in },
+        connectionEndedHandler: @escaping ConnectionEndedHandler = { _ in }
     ) {
         self.localNodeID = localNodeID
         self.browser = browser
         self.connectionFactory = connectionFactory
+        self.reconnectDelay = reconnectDelay
         self.diagnosticSink = diagnosticSink
+        self.connectionHandler = connectionHandler
+        self.connectionEndedHandler = connectionEndedHandler
     }
 
     public func start() {
@@ -246,6 +277,10 @@ public actor BonjourDiscoveryCoordinator {
         generation &+= 1
         browser.cancel()
         connections.values.forEach { $0.cancel() }
+        handedOffConnectionIDs.forEach(connectionEndedHandler)
+        handedOffConnectionIDs.removeAll()
+        reconnectTasks.values.forEach { $0.cancel() }
+        reconnectTasks.removeAll()
         connections.removeAll()
         candidates.removeAll()
         keysByEndpoint.removeAll()
@@ -294,6 +329,7 @@ public actor BonjourDiscoveryCoordinator {
         if let previousKey = keysByEndpoint[advertisement.endpointID],
            previousKey.advertisementNonce != metadata.advertisementNonce {
             connections.removeValue(forKey: previousKey)?.cancel()
+            reconnectTasks.removeValue(forKey: previousKey)?.cancel()
             candidates.removeValue(forKey: previousKey)
         }
         let candidate = BonjourDiscoveryCandidate(advertisement: advertisement, metadata: metadata)
@@ -313,9 +349,19 @@ public actor BonjourDiscoveryCoordinator {
             return
         }
         diagnosticSink(.initiatorSelected(candidate.key, hintedPeer: candidate.nodeIDHint))
-        guard connections[candidate.key] == nil else { return }
+        startConnection(for: candidate, generation: callbackGeneration)
+    }
+
+    private func startConnection(
+        for candidate: BonjourDiscoveryCandidate,
+        generation callbackGeneration: UInt64
+    ) {
+        guard callbackGeneration == generation,
+              candidates[candidate.key] != nil,
+              connections[candidate.key] == nil else { return }
+        reconnectTasks.removeValue(forKey: candidate.key)?.cancel()
         do {
-            let connection = try connectionFactory.makeConnection(to: advertisement.endpointID)
+            let connection = try connectionFactory.makeConnection(to: candidate.key.endpointID)
             connections[candidate.key] = connection
             let connectionID = connection.id
             connection.start { [weak self] state in
@@ -328,12 +374,14 @@ public actor BonjourDiscoveryCoordinator {
             }
         } catch {
             diagnosticSink(.connectionCreationFailed(candidate.key, reason: String(describing: error)))
+            scheduleReconnect(for: candidate.key, generation: callbackGeneration)
         }
     }
 
     private func remove(endpointID: BonjourEndpointID) {
         guard let key = keysByEndpoint.removeValue(forKey: endpointID) else { return }
         candidates.removeValue(forKey: key)
+        reconnectTasks.removeValue(forKey: key)?.cancel()
         diagnosticSink(.discoveryRemoved(endpointID))
         // Discovery loss is not authentication failure and does not tear down a connection.
     }
@@ -349,8 +397,53 @@ public actor BonjourDiscoveryCoordinator {
             return
         }
         diagnosticSink(.connectionState(connectionID, state))
-        if case .failed = state { connections.removeValue(forKey: key) }
-        if state == .cancelled { connections.removeValue(forKey: key) }
+        if state == .ready, let connection = connections[key] {
+            reconnectTasks.removeValue(forKey: key)?.cancel()
+            guard let candidate = candidates[key] else {
+                connection.cancel()
+                removeConnection(for: key)
+                return
+            }
+            if handedOffConnectionIDs.insert(connectionID).inserted {
+                connectionHandler(candidate, connection)
+            }
+        }
+        if case .failed = state {
+            removeConnection(for: key)
+            scheduleReconnect(for: key, generation: callbackGeneration)
+        }
+        if state == .cancelled {
+            removeConnection(for: key)
+            scheduleReconnect(for: key, generation: callbackGeneration)
+        }
+    }
+
+    private func scheduleReconnect(for key: BonjourDiscoveryKey, generation callbackGeneration: UInt64) {
+        guard callbackGeneration == generation,
+              reconnectTasks[key] == nil,
+              let candidate = candidates[key],
+              candidate.protocolMajorVersion == TransportCapabilities.currentProtocolVersion,
+              candidate.nodeIDHint != localNodeID,
+              Self.canonicalNodeID(localNodeID, precedes: candidate.nodeIDHint) else { return }
+        reconnectTasks[key] = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: self.reconnectDelay)
+            guard !Task.isCancelled else { return }
+            await self.retryConnection(for: key, generation: callbackGeneration)
+        }
+    }
+
+    private func retryConnection(for key: BonjourDiscoveryKey, generation callbackGeneration: UInt64) {
+        reconnectTasks.removeValue(forKey: key)
+        guard let candidate = candidates[key] else { return }
+        startConnection(for: candidate, generation: callbackGeneration)
+    }
+
+    private func removeConnection(for key: BonjourDiscoveryKey) {
+        guard let connection = connections.removeValue(forKey: key) else { return }
+        if handedOffConnectionIDs.remove(connection.id) != nil {
+            connectionEndedHandler(connection.id)
+        }
     }
 
     private static func canonicalNodeID(_ lhs: NodeID, precedes rhs: NodeID) -> Bool {

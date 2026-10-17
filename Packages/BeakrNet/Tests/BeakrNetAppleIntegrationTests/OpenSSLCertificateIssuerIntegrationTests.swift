@@ -43,6 +43,9 @@ struct OpenSSLCertificateIssuerIntegrationTests {
         let material = try await issuer.issueCertificate(
             nodeID: identity.nodeID,
             nodePublicKey: identity.publicKeyRepresentation,
+            certificateSigningRequestDER: try identity.certificateSigningRequest(
+                commonName: "BeakrNet Node \(identity.nodeID.rawValue.uuidString.lowercased())"
+            ),
             validity: 86_400,
             now: Date()
         )
@@ -97,6 +100,9 @@ struct OpenSSLCertificateIssuerIntegrationTests {
         let replacement = try await issuer.issueCertificate(
             nodeID: identity.nodeID,
             nodePublicKey: identity.publicKeyRepresentation,
+            certificateSigningRequestDER: try identity.certificateSigningRequest(
+                commonName: "BeakrNet Node \(identity.nodeID.rawValue.uuidString.lowercased())"
+            ),
             validity: 86_400,
             now: Date()
         )

@@ -16,6 +16,7 @@ The package deliberately has no dependency on the existing Beakr prototype, XYZ 
 - Deterministic route selection and relay/LAN handoff
 - Certificate enrollment, renewal, rotation, recovery, and revocation distribution
 - Opt-in signed Apple-platform integration coverage
+- Durable Context and Store identities with network reattachment and Context-owned message persistence
 
 The transport meaning of Control, Data, and Blackboard is implemented. Their application-level protocols are the next milestones. WatchConnectivity, Bluetooth Low Energy, application rules, public APIs, and user-interface integration remain later work.
 
@@ -45,14 +46,14 @@ Create two development identities and note the receiver's printed Node ID:
 ```sh
 swift run BeakrNetNodeCLI identity /tmp/beakrnet-node-a.key
 swift run BeakrNetNodeCLI identity /tmp/beakrnet-node-b.key
-swift run BeakrNetCredentialTool issue /tmp/beakrnet-authority.key /tmp/beakrnet-node-a.key /tmp/beakrnet-node-a.credential development ping 86400
-swift run BeakrNetCredentialTool issue /tmp/beakrnet-authority.key /tmp/beakrnet-node-b.key /tmp/beakrnet-node-b.credential development ping 86400
+swift run BeakrNetCredentialTool issue /tmp/beakrnet-authority.key /tmp/beakrnet-node-a.key /tmp/beakrnet-node-a.credential 7E570000-0000-4000-8000-000000000001 development ping 86400
+swift run BeakrNetCredentialTool issue /tmp/beakrnet-authority.key /tmp/beakrnet-node-b.key /tmp/beakrnet-node-b.credential 7E570000-0000-4000-8000-000000000001 development ping 86400
 swift run BeakrNetCredentialTool create-revocations /tmp/beakrnet-authority.key /tmp/beakrnet-revocations.json
-swift run BeakrNetRelayServer 7878 /tmp/beakrnet-relay.psk /tmp/beakrnet-authority.pub development /tmp/beakrnet-revocations.json
+swift run BeakrNetRelayServer 7878 /tmp/beakrnet-relay.psk /tmp/beakrnet-authority.pub 7E570000-0000-4000-8000-000000000001 development /tmp/beakrnet-revocations.json
 swift run BeakrNetNodeCLI receive /tmp/beakrnet-node-b.key 10 /tmp/beakrnet-relay.psk /tmp/beakrnet-node-b.credential
 swift run BeakrNetNodeCLI send /tmp/beakrnet-node-a.key 10 <node-b-uuid> /tmp/beakrnet-relay.psk /tmp/beakrnet-node-a.credential
 ```
 
 The relay command-line lab uses TLS with a development PSK and separately authenticates authority-issued node credentials and possession of the node identity. The shared development PSK, command-line authority material, and laboratory server are not a production deployment configuration.
 
-See [Implementation Plan](Implementation-Plan.md) for completed work, [Next Milestones](Next-Milestones.md) for the ordered roadmap, [Package Architecture and Testing](Package-Architecture-and-Testing.md) for dependency and validation boundaries, [Blackboard Replication Design](Blackboard-Replication-Design.md) for replication, [Reliable Large Data Transfer Design](Reliable-Transfer-Design.md) for staged transfer semantics, [Host API, Storage, and Lifecycle Design](Host-Integration-Design.md) for application integration, and [Production Operations Design](Production-Operations-Design.md) for deployment constraints.
+See [BeakrNet Functional Specification](BeakrNet-Functional-Spec.md) for user-visible system behavior, [Implementation Plan](Implementation-Plan.md) for completed work, [Next Milestones](Next-Milestones.md) for the ordered roadmap, [Package Architecture and Testing](Package-Architecture-and-Testing.md) for dependency and validation boundaries, [Blackboard Replication Design](Blackboard-Replication-Design.md) for replication, [Reliable Large Data Transfer Design](Reliable-Transfer-Design.md) for staged transfer semantics, [Host API, Storage, and Lifecycle Design](Host-Integration-Design.md) for application integration, [Context, Storage, and Synchronization Design](Context-Storage-and-Synchronization-Design.md) for durable user data and cross-device policy, and [Production Operations Design](Production-Operations-Design.md) for deployment constraints.

@@ -8,10 +8,11 @@ import BeakrNetAuthority
 struct BeakrNetRelayServerMain {
     static func main() async throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
-        let listenOnLAN = arguments.count == 6 && arguments[5] == "--lan"
-        guard (arguments.count == 5 || listenOnLAN),
-              let portValue = UInt16(arguments[0]) else {
-            print("Usage: BeakrNetRelayServer <port> <psk-file> <authority-public-key> <environment> <revocation-snapshot> [--lan]")
+        let listenOnLAN = arguments.count == 7 && arguments[6] == "--lan"
+        guard (arguments.count == 6 || listenOnLAN),
+              let portValue = UInt16(arguments[0]),
+              let networkUUID = UUID(uuidString: arguments[3]) else {
+            print("Usage: BeakrNetRelayServer <port> <psk-file> <authority-public-key> <network-id> <environment> <revocation-snapshot> [--lan]")
             return
         }
         guard let port = NWEndpoint.Port(rawValue: portValue) else {
@@ -24,14 +25,16 @@ struct BeakrNetRelayServerMain {
             contentsOf: URL(fileURLWithPath: arguments[2])
         )
         let revocationSnapshot = try CredentialFiles.loadRevocationSnapshot(
-            from: URL(fileURLWithPath: arguments[4])
+            from: URL(fileURLWithPath: arguments[5])
         )
         let revokedCredentialIDs = try RevocationVerifier.verify(
             revocationSnapshot,
             trustedAuthorityPublicKey: authorityPublicKey
         )
         let queueFileURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["BEAKRNET_RELAY_QUEUE_FILE"] ?? "BeakrNetRelayQueue.json")
+        let networkID = NetworkID(rawValue: networkUUID)
         let offlineQueue = try await PersistentRelayQueue.open(
+            networkID: networkID,
             policy: .development,
             fileURL: queueFileURL
         )
@@ -40,7 +43,8 @@ struct BeakrNetRelayServerMain {
             port: port,
             preSharedKey: preSharedKey,
             authorityPublicKey: authorityPublicKey,
-            environment: arguments[3],
+            networkID: networkID,
+            environment: arguments[4],
             revokedCredentialIDs: revokedCredentialIDs,
             listenOnLAN: listenOnLAN,
             offlineQueue: offlineQueue
@@ -53,6 +57,7 @@ private actor RelayServer {
     private let listener: NWListener
     private let port: NWEndpoint.Port
     private let authorityPublicKey: Data
+    private let networkID: NetworkID
     private let environment: String
     private let revokedCredentialIDs: Set<UUID>
     private let listenOnLAN: Bool
@@ -65,6 +70,7 @@ private actor RelayServer {
         port: NWEndpoint.Port,
         preSharedKey: Data,
         authorityPublicKey: Data,
+        networkID: NetworkID,
         environment: String,
         revokedCredentialIDs: Set<UUID>,
         listenOnLAN: Bool,
@@ -72,6 +78,7 @@ private actor RelayServer {
     ) throws {
         self.port = port
         self.authorityPublicKey = authorityPublicKey
+        self.networkID = networkID
         self.environment = environment
         self.revokedCredentialIDs = revokedCredentialIDs
         self.listenOnLAN = listenOnLAN
@@ -130,6 +137,7 @@ private actor RelayServer {
                 try CredentialVerifier.verify(
                     credential,
                     trustedAuthorityPublicKey: authorityPublicKey,
+                    networkID: networkID,
                     environment: environment,
                     revokedCredentialIDs: revokedCredentialIDs
                 )
@@ -180,6 +188,9 @@ private actor RelayServer {
             }
 
         case .envelope(let envelope):
+            guard envelope.networkID == networkID else {
+                throw RelayServerError.wrongNetwork
+            }
             guard nodeIDsByConnection[ObjectIdentifier(connection)] == envelope.sourceNodeID else {
                 throw RelayServerError.sourceIdentityMismatch
             }
@@ -226,4 +237,5 @@ private enum RelayServerError: Error {
     case invalidRegistrationProof
     case unexpectedClientMessage
     case sourceIdentityMismatch
+    case wrongNetwork
 }

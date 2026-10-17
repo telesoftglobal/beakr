@@ -1,4 +1,6 @@
 import Foundation
+import Security
+import OSLog
 import BeakrNetCore
 import BeakrNetSecurity
 
@@ -111,15 +113,18 @@ public actor CertificateEnrollmentHTTPEndpoint {
 
     private let challenges: CertificateEnrollmentChallengeService
     private let enrollment: CertificateEnrollmentService
+    private let membershipPublisher: (any CertificateEnrollmentMembershipPublishing)?
     private let now: @Sendable () -> Date
 
     public init(
         challenges: CertificateEnrollmentChallengeService,
         enrollment: CertificateEnrollmentService,
+        membershipPublisher: (any CertificateEnrollmentMembershipPublishing)? = nil,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.challenges = challenges
         self.enrollment = enrollment
+        self.membershipPublisher = membershipPublisher
         self.now = now
     }
 
@@ -163,6 +168,11 @@ public actor CertificateEnrollmentHTTPEndpoint {
                 let enrollmentRequest = try CertificateEnrollmentWireCodec.decode(request.body)
                 try await challenges.validateIssued(enrollmentRequest.challenge, now: now())
                 let result = try await enrollment.enroll(enrollmentRequest, now: now())
+                try await membershipPublisher?.publishEnrollment(
+                    request: enrollmentRequest,
+                    response: result,
+                    now: now()
+                )
                 await challenges.consume(enrollmentRequest.challenge.challengeID)
                 return response(
                     status: 200,
@@ -277,16 +287,26 @@ public final class URLSessionCertificateEnrollmentTransport: CertificateEnrollme
     @unchecked Sendable {
     private let baseURL: URL
     private let session: URLSession
+    private let trustedAuthorityCertificateDER: Data?
 
-    public init(baseURL: URL, session: URLSession = .shared) throws {
+    public init(
+        baseURL: URL,
+        session: URLSession = .shared,
+        trustedAuthorityCertificateDER: Data? = nil
+    ) throws {
         guard baseURL.scheme?.lowercased() == "https",
               baseURL.host != nil,
               baseURL.user == nil,
               baseURL.password == nil else {
             throw CertificateEnrollmentNetworkError.insecureBaseURL
         }
+        if let trustedAuthorityCertificateDER,
+           SecCertificateCreateWithData(nil, trustedAuthorityCertificateDER as CFData) == nil {
+            throw CertificateEnrollmentNetworkError.invalidTrustAnchor
+        }
         self.baseURL = baseURL
         self.session = session
+        self.trustedAuthorityCertificateDER = trustedAuthorityCertificateDER
     }
 
     public func send(_ request: CertificateEnrollmentHTTPRequest) async throws
@@ -298,14 +318,22 @@ public final class URLSessionCertificateEnrollmentTransport: CertificateEnrollme
               url.host?.lowercased() == baseURL.host?.lowercased() else {
             throw CertificateEnrollmentNetworkError.invalidURL
         }
-        var urlRequest = URLRequest(url: url)
+        // Authority state is security-sensitive and network-scoped. Different Beakr
+        // networks can legitimately reuse the same local hostname and port, so a
+        // shared URL cache must never supply another network's trust snapshot.
+        var urlRequest = URLRequest(
+            url: url,
+            cachePolicy: .reloadIgnoringLocalCacheData
+        )
         urlRequest.httpMethod = request.method
         urlRequest.httpBody = request.body
+        urlRequest.setValue("no-cache, no-store", forHTTPHeaderField: "cache-control")
         request.headers.forEach { urlRequest.setValue($0.value, forHTTPHeaderField: $0.key) }
-        let (data, response) = try await session.data(
-            for: urlRequest,
-            delegate: EnrollmentNoRedirectDelegate()
+        let delegate = EnrollmentRequestDelegate(
+            expectedHostname: baseURL.host!,
+            trustedAuthorityCertificateDER: trustedAuthorityCertificateDER
         )
+        let (data, response) = try await session.data(for: urlRequest, delegate: delegate)
         guard let http = response as? HTTPURLResponse,
               http.url?.scheme?.lowercased() == "https",
               http.url?.host?.lowercased() == baseURL.host?.lowercased() else {
@@ -323,8 +351,56 @@ public final class URLSessionCertificateEnrollmentTransport: CertificateEnrollme
     }
 }
 
-private final class EnrollmentNoRedirectDelegate: NSObject, URLSessionTaskDelegate,
+private final class EnrollmentRequestDelegate: NSObject, URLSessionTaskDelegate,
     @unchecked Sendable {
+    private static let logger = Logger(subsystem: "net.beakr", category: "EnrollmentTrust")
+    private let expectedHostname: String
+    private let trustedAuthorityCertificateDER: Data?
+
+    init(expectedHostname: String, trustedAuthorityCertificateDER: Data?) {
+        self.expectedHostname = expectedHostname
+        self.trustedAuthorityCertificateDER = trustedAuthorityCertificateDER
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trustedAuthorityCertificateDER else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        guard challenge.protectionSpace.host.caseInsensitiveCompare(expectedHostname) == .orderedSame else {
+            Self.logger.error("Enrollment trust rejected: challenge hostname does not match the configured authority hostname")
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        guard let trust = challenge.protectionSpace.serverTrust,
+              let anchor = SecCertificateCreateWithData(nil, trustedAuthorityCertificateDER as CFData) else {
+            Self.logger.error("Enrollment trust rejected: server trust or authority certificate is unavailable")
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        guard SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, expectedHostname as CFString)) == errSecSuccess,
+              SecTrustSetAnchorCertificates(trust, [anchor] as CFArray) == errSecSuccess,
+              SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess else {
+            Self.logger.error("Enrollment trust rejected: the pinned authority trust policy could not be configured")
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        var trustError: CFError?
+        guard SecTrustEvaluateWithError(trust, &trustError) else {
+            let reason = trustError.map { String(describing: $0) } ?? "unknown trust error"
+            Self.logger.error("Enrollment trust rejected: \(reason, privacy: .public)")
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
@@ -340,6 +416,7 @@ public enum CertificateEnrollmentNetworkError: Error, Equatable, Sendable {
     case invalidConfiguration
     case wrongEnvironment
     case insecureBaseURL
+    case invalidTrustAnchor
     case invalidURL
     case invalidResponse
     case responseTooLarge

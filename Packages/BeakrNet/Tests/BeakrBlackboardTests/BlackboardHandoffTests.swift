@@ -12,9 +12,9 @@ struct BlackboardHandoffTests {
         let repository = BlackboardRepository()
         try await repository.createSpace(id: space, name: "Notes", owner: source)
         let dispatcher = BlackboardDispatcher(repository: repository)
-        let receiver = BeakrNetSession(id: sessionID, localNodeID: destination, remoteNodeID: source, state: .active, now: now)
-        let sender = BeakrNetSession(id: sessionID, localNodeID: source, remoteNodeID: destination, state: .active, now: now)
-        let coordinator = PeerRouteCoordinator(remoteNodeID: destination)
+        let receiver = BeakrNetSession(id: sessionID, networkID: .test, localNodeID: destination, remoteNodeID: source, state: .active, now: now)
+        let sender = BeakrNetSession(id: sessionID, networkID: .test, localNodeID: source, remoteNodeID: destination, state: .active, now: now)
+        let coordinator = PeerRouteCoordinator(networkID: .test, remoteNodeID: destination)
         let driver = SessionDeliveryDriver(session: sender, coordinator: coordinator, clock: { now })
         let relay = BlackboardTransport(kind: .relay, receiver: receiver, dispatcher: dispatcher, ambiguous: false)
         let lan = BlackboardTransport(kind: .local, receiver: receiver, dispatcher: dispatcher, ambiguous: true)
@@ -30,7 +30,7 @@ struct BlackboardHandoffTests {
         )
         let message = BlackboardWireMessage(kind: .operationBatch, spaceID: space, operations: [operation])
         let envelope = try BlackboardCodec().makeEnvelope(
-            for: message, sessionID: sessionID, sourceNodeID: source, destinationNodeID: destination,
+            for: message, networkID: .test, sessionID: sessionID, sourceNodeID: source, destinationNodeID: destination,
             sequenceNumber: 1, createdAt: now, deliveryPolicy: .init(durability: .durable, expiresAt: now.addingTimeInterval(60))
         )
         guard case .sent(let route, let attempts) = try await driver.deliver(envelope) else { Issue.record("Expected fallback"); return }

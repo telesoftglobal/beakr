@@ -9,6 +9,7 @@ struct InMemoryTransportTests {
     func channelPreservation() async throws {
         let (sender, receiver) = await InMemoryTransport.makePair()
         let envelope = BeakrNetEnvelope(
+            networkID: .test,
             sessionID: SessionID(),
             sourceNodeID: NodeID(),
             destinationNodeID: NodeID(),
@@ -31,6 +32,7 @@ struct InMemoryTransportTests {
     func delivery() async throws {
         let (sender, receiver) = await InMemoryTransport.makePair()
         let envelope = BeakrNetEnvelope(
+            networkID: .test,
             sessionID: SessionID(),
             sourceNodeID: NodeID(),
             destinationNodeID: NodeID(),

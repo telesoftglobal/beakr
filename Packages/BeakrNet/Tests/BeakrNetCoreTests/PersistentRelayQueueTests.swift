@@ -9,18 +9,18 @@ struct PersistentRelayQueueTests {
         let fileURL = temporaryFileURL()
         let destination = NodeID()
         let policy = policy(controlBurst: 2)
-        let first = try await PersistentRelayQueue.open(policy: policy, fileURL: fileURL)
+        let first = try await PersistentRelayQueue.open(networkID: .test, policy: policy, fileURL: fileURL)
 
         try await first.enqueue(control(sequence: 1, destination: destination), for: destination, now: date(1))
         try await first.enqueue(control(sequence: 2, destination: destination), for: destination, now: date(2))
         try await first.enqueue(control(sequence: 3, destination: destination), for: destination, now: date(3))
         try await first.enqueue(application(sequence: 4, destination: destination), for: destination, now: date(4))
 
-        let reopened = try await PersistentRelayQueue.open(policy: policy, fileURL: fileURL, now: date(5))
+        let reopened = try await PersistentRelayQueue.open(networkID: .test, policy: policy, fileURL: fileURL, now: date(5))
         let drained = try await reopened.drain(for: destination, now: date(5))
 
         #expect(drained.map(\.channel) == [.control, .control, .data, .control])
-        #expect(try await PersistentRelayQueue.open(policy: policy, fileURL: fileURL, now: date(5)).countAll(now: date(5)) == 0)
+        #expect(try await PersistentRelayQueue.open(networkID: .test, policy: policy, fileURL: fileURL, now: date(5)).countAll(now: date(5)) == 0)
     }
 
     @Test("Persistent admission preserves reserved Control capacity")
@@ -34,13 +34,13 @@ struct PersistentRelayQueueTests {
             reservedControlMessagesTotal: 1,
             messageTimeToLive: 60
         )
-        let queue = try await PersistentRelayQueue.open(policy: policy, fileURL: fileURL)
+        let queue = try await PersistentRelayQueue.open(networkID: .test, policy: policy, fileURL: fileURL)
         for sequence in 1...4 {
             try await queue.enqueue(application(sequence: UInt64(sequence), destination: destination), for: destination, now: date(sequence))
         }
         try await queue.enqueue(control(sequence: 5, destination: destination), for: destination, now: date(5))
 
-        let reopened = try await PersistentRelayQueue.open(policy: policy, fileURL: fileURL, now: date(5))
+        let reopened = try await PersistentRelayQueue.open(networkID: .test, policy: policy, fileURL: fileURL, now: date(5))
         let drained = try await reopened.drain(for: destination, now: date(5))
         #expect(drained.count == 4)
         #expect(drained.first?.channel == .control)
@@ -52,10 +52,10 @@ struct PersistentRelayQueueTests {
         let fileURL = temporaryFileURL()
         let destination = NodeID()
         let policy = policy(controlBurst: 2, timeToLive: 10)
-        let queue = try await PersistentRelayQueue.open(policy: policy, fileURL: fileURL)
+        let queue = try await PersistentRelayQueue.open(networkID: .test, policy: policy, fileURL: fileURL)
         try await queue.enqueue(application(sequence: 1, destination: destination), for: destination, now: date(1))
 
-        let reopened = try await PersistentRelayQueue.open(policy: policy, fileURL: fileURL, now: date(11))
+        let reopened = try await PersistentRelayQueue.open(networkID: .test, policy: policy, fileURL: fileURL, now: date(11))
         #expect(await reopened.countAll(now: date(11)) == 0)
         #expect(try await reopened.drain(for: destination, now: date(11)).isEmpty)
     }
@@ -83,6 +83,7 @@ struct PersistentRelayQueueTests {
 
     private func application(sequence: UInt64, destination: NodeID) -> BeakrNetEnvelope {
         BeakrNetEnvelope(
+            networkID: .test,
             sessionID: SessionID(),
             sourceNodeID: NodeID(),
             destinationNodeID: destination,
@@ -94,6 +95,7 @@ struct PersistentRelayQueueTests {
 
     private func control(sequence: UInt64, destination: NodeID) -> BeakrNetEnvelope {
         BeakrNetEnvelope(
+            networkID: .test,
             sessionID: SessionID(),
             sourceNodeID: NodeID(),
             destinationNodeID: destination,

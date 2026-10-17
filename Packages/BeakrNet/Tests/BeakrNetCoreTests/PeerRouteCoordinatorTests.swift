@@ -8,7 +8,7 @@ struct PeerRouteCoordinatorTests {
     func rejectsStaleCallbacks() async {
         let peer = NodeID()
         let transportID = id(10)
-        let coordinator = PeerRouteCoordinator(remoteNodeID: peer)
+        let coordinator = PeerRouteCoordinator(networkID: .test, remoteNodeID: peer)
 
         let first = await coordinator.beginCandidate(
             transportID: transportID,
@@ -38,7 +38,7 @@ struct PeerRouteCoordinatorTests {
         let envelope = makeEnvelope(destination: peer)
         let relayID = id(1)
         let localID = id(2)
-        let coordinator = PeerRouteCoordinator(remoteNodeID: peer)
+        let coordinator = PeerRouteCoordinator(networkID: .test, remoteNodeID: peer)
 
         let relayGeneration = await coordinator.beginCandidate(
             transportID: relayID,
@@ -81,7 +81,7 @@ struct PeerRouteCoordinatorTests {
         let envelope = makeEnvelope(destination: peer)
         let relayID = id(1)
         let localID = id(2)
-        let coordinator = PeerRouteCoordinator(remoteNodeID: peer)
+        let coordinator = PeerRouteCoordinator(networkID: .test, remoteNodeID: peer)
         let relayGeneration = await coordinator.beginCandidate(
             transportID: relayID,
             kind: .relay,
@@ -112,7 +112,7 @@ struct PeerRouteCoordinatorTests {
     func envelopeSpecificCompatibility() async {
         let peer = NodeID()
         let envelope = makeEnvelope(destination: peer)
-        let coordinator = PeerRouteCoordinator(remoteNodeID: peer)
+        let coordinator = PeerRouteCoordinator(networkID: .test, remoteNodeID: peer)
         let relayID = id(1)
         let localID = id(2)
         let relayGeneration = await coordinator.beginCandidate(
@@ -142,7 +142,7 @@ struct PeerRouteCoordinatorTests {
     func doesNotOwnPendingDeliveries() async throws {
         let localNode = NodeID()
         let peer = NodeID()
-        let session = BeakrNetSession(localNodeID: localNode, remoteNodeID: peer)
+        let session = BeakrNetSession(networkID: .test, localNodeID: localNode, remoteNodeID: peer)
         let envelope = makeEnvelope(
             sessionID: await session.id,
             source: localNode,
@@ -150,7 +150,7 @@ struct PeerRouteCoordinatorTests {
         )
         try await session.queueForDelivery(envelope)
         let before = await session.pendingDelivery(for: envelope.messageID)
-        let coordinator = PeerRouteCoordinator(remoteNodeID: peer)
+        let coordinator = PeerRouteCoordinator(networkID: .test, remoteNodeID: peer)
         let relayID = id(1)
         let generation = await coordinator.beginCandidate(
             transportID: relayID,
@@ -184,6 +184,7 @@ struct PeerRouteCoordinatorTests {
         destination: NodeID
     ) -> BeakrNetEnvelope {
         BeakrNetEnvelope(
+            networkID: .test,
             sessionID: sessionID,
             sourceNodeID: source,
             destinationNodeID: destination,

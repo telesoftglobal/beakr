@@ -25,9 +25,14 @@ public struct CredentialAuthority: Sendable {
         try privateKey.signature(for: transcript).derRepresentation
     }
 
+    func signature(forNetworkInvitation transcript: Data) throws -> Data {
+        try privateKey.signature(for: transcript).derRepresentation
+    }
+
     public func issue(
         nodeID: NodeID,
         nodePublicKey: Data,
+        networkID: NetworkID,
         environment: String,
         validity: TimeInterval,
         serviceScopes: [String] = [],
@@ -37,6 +42,7 @@ public struct CredentialAuthority: Sendable {
         let expiresAt = Int64(((now.timeIntervalSince1970 + validity) * 1_000).rounded(.down))
         let claims = NodeCredentialClaims(
             issuerID: authorityID,
+            networkID: networkID,
             nodeID: nodeID,
             nodePublicKey: nodePublicKey,
             environment: environment,
@@ -54,6 +60,7 @@ public enum CredentialVerificationError: Error, Equatable, Sendable {
     case wrongIssuer
     case invalidSignature
     case nodeIdentityMismatch
+    case wrongNetwork
     case wrongEnvironment
     case revoked
     case issuedInFuture
@@ -65,6 +72,7 @@ public enum CredentialVerifier {
     public static func verify(
         _ credential: NodeCredential,
         trustedAuthorityPublicKey: Data,
+        networkID: NetworkID,
         environment: String,
         revokedCredentialIDs: Set<UUID> = [],
         now: Date = Date(),
@@ -81,6 +89,9 @@ public enum CredentialVerifier {
             forPublicKeyRepresentation: claims.nodePublicKey
         ) == claims.nodeID else {
             throw CredentialVerificationError.nodeIdentityMismatch
+        }
+        guard claims.networkID == networkID else {
+            throw CredentialVerificationError.wrongNetwork
         }
         guard claims.environment == environment else {
             throw CredentialVerificationError.wrongEnvironment
@@ -124,13 +135,14 @@ public enum CredentialVerifier {
 }
 
 private enum CredentialTranscript {
-    private static let domain = Data("BeakrNet node credential v1\0".utf8)
+    private static let domain = Data("BeakrNet node credential v2\0".utf8)
 
     static func data(for claims: NodeCredentialClaims) -> Data {
         var result = domain
         append(UInt64(claims.version), to: &result)
         append(claims.credentialID.uuidString.lowercased(), to: &result)
         append(claims.issuerID.rawValue.uuidString.lowercased(), to: &result)
+        append(claims.networkID.rawValue.uuidString.lowercased(), to: &result)
         append(claims.nodeID.rawValue.uuidString.lowercased(), to: &result)
         append(claims.nodePublicKey, to: &result)
         append(claims.environment, to: &result)

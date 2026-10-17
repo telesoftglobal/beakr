@@ -4,7 +4,7 @@ BeakrNet establishes authenticated logical sessions between nodes and carries me
 
 The detailed separation between logical channels, delivery policy, representation profiles, constrained transports, and real-time media is recorded in [Channel Model](Channel-Model.md).
 
-The wider product architecture—including storage, rules, external APIs, relay federation, observability, and AI integrations—is recorded in [Beakr System Architecture](Beakr-System-Architecture.md).
+The wider product architecture—including storage, rules, external APIs, relay federation, observability, and AI integrations—is recorded in [Beakr System Architecture](Beakr-System-Architecture.md). The durable Context boundary, generic stores, and cross-device synchronization policy are defined in [Context, Storage, and Synchronization Design](Context-Storage-and-Synchronization-Design.md).
 
 ## Boundaries
 

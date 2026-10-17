@@ -126,6 +126,7 @@ public enum LANHandshakeError: Error, Equatable, Sendable {
     case advertisementNonceMismatch
     case capabilityMismatch
     case invalidCredential
+    case wrongNetwork
     case wrongEnvironment
     case expiredCredential
     case revokedCredential
@@ -139,6 +140,7 @@ public enum LANHandshakeError: Error, Equatable, Sendable {
 }
 
 public struct LANHandshakeAuthentication: Equatable, Sendable {
+    public let networkID: NetworkID
     public let peerNodeID: NodeID
     public let peerCredentialID: UUID
     public let negotiatedCapabilities: TransportCapabilities
@@ -187,6 +189,7 @@ public actor LANHandshakeAuthenticator {
         localHello: LANHandshakeHello,
         peerHello: LANHandshakeHello,
         peerProof: LANHandshakeProof,
+        expectedNetworkID: NetworkID,
         expectedPeerNodeID: NodeID,
         expectedAdvertisementNonce: Data,
         trustedAuthorityPublicKey: Data,
@@ -208,6 +211,10 @@ public actor LANHandshakeAuthenticator {
         }
         guard localHello.nodeID == localHello.credential.claims.nodeID else {
             throw LANHandshakeError.wrongLocalIdentity
+        }
+        guard localHello.credential.claims.networkID == expectedNetworkID,
+              peerHello.credential.claims.networkID == expectedNetworkID else {
+            throw LANHandshakeError.wrongNetwork
         }
         guard peerHello.nodeID == expectedPeerNodeID,
               peerProof.nodeID == expectedPeerNodeID,
@@ -274,6 +281,7 @@ public actor LANHandshakeAuthenticator {
             throw LANHandshakeError.replayedProof
         }
         return LANHandshakeAuthentication(
+            networkID: expectedNetworkID,
             peerNodeID: peerHello.nodeID,
             peerCredentialID: peerHello.credential.claims.credentialID,
             negotiatedCapabilities: capabilities
@@ -375,10 +383,11 @@ public actor LANHandshakeAuthenticator {
     }
 
     private static func credentialBytes(_ claims: NodeCredentialClaims) -> Data {
-        var data = Data("BeakrNet node credential v1\0".utf8)
+        var data = Data("BeakrNet node credential v2\0".utf8)
         Binary.append(UInt64(claims.version), to: &data)
         Binary.append(claims.credentialID.uuidString.lowercased(), to: &data)
         Binary.append(claims.issuerID.rawValue.uuidString.lowercased(), to: &data)
+        Binary.append(claims.networkID.rawValue.uuidString.lowercased(), to: &data)
         Binary.append(claims.nodeID.rawValue.uuidString.lowercased(), to: &data)
         Binary.append(claims.nodePublicKey, to: &data)
         Binary.append(claims.environment, to: &data)

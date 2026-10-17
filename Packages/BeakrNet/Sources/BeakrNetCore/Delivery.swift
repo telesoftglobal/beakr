@@ -3,10 +3,12 @@ import Foundation
 public struct DeliveryAcknowledgement: Codable, Equatable, Sendable {
     public static let payloadType = ControlPayloadType.deliveryAcknowledgement.rawValue
 
+    public let networkID: NetworkID
     public let sessionID: SessionID
     public let messageID: MessageID
 
-    public init(sessionID: SessionID, messageID: MessageID) {
+    public init(networkID: NetworkID, sessionID: SessionID, messageID: MessageID) {
+        self.networkID = networkID
         self.sessionID = sessionID
         self.messageID = messageID
     }

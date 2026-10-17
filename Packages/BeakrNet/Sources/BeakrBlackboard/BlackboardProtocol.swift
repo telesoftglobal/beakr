@@ -127,6 +127,7 @@ public struct BlackboardCodec: Sendable {
 
     public func makeEnvelope(
         for message: BlackboardWireMessage,
+        networkID: NetworkID,
         sessionID: SessionID,
         sourceNodeID: NodeID,
         destinationNodeID: NodeID,
@@ -136,7 +137,7 @@ public struct BlackboardCodec: Sendable {
         deliveryPolicy: DeliveryPolicy
     ) throws -> BeakrNetEnvelope {
         BeakrNetEnvelope(
-            messageID: messageID, sessionID: sessionID,
+            messageID: messageID, networkID: networkID, sessionID: sessionID,
             sourceNodeID: sourceNodeID, destinationNodeID: destinationNodeID,
             sequenceNumber: sequenceNumber, channel: .blackboard,
             representation: .full, deliveryPolicy: deliveryPolicy,

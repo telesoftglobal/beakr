@@ -52,8 +52,8 @@ struct SessionDeliveryDriverTests {
         let local = NodeID()
         let remote = NodeID()
         let sessionID = SessionID()
-        let session = BeakrNetSession(id: sessionID, localNodeID: local, remoteNodeID: remote, state: .active)
-        let coordinator = PeerRouteCoordinator(remoteNodeID: remote)
+        let session = BeakrNetSession(id: sessionID, networkID: .test, localNodeID: local, remoteNodeID: remote, state: .active)
+        let coordinator = PeerRouteCoordinator(networkID: .test, remoteNodeID: remote)
         let driver = SessionDeliveryDriver(session: session, coordinator: coordinator)
         let relay = ScriptedTransport(id: id(1), kind: .relay, results: [])
         let generation = await add(relay, to: coordinator, driver: driver)
@@ -64,7 +64,7 @@ struct SessionDeliveryDriverTests {
 
         #expect(first.acceptance == .accepted)
         #expect(duplicate.acceptance == .duplicate)
-        #expect(duplicate.acknowledgement == DeliveryAcknowledgement(sessionID: sessionID, messageID: incoming.messageID))
+        #expect(duplicate.acknowledgement == DeliveryAcknowledgement(networkID: .test, sessionID: sessionID, messageID: incoming.messageID))
     }
 
     @Test("Acknowledgement may arrive on a different authenticated route")
@@ -77,7 +77,7 @@ struct SessionDeliveryDriverTests {
         _ = try await fixture.driver.deliver(fixture.envelope)
 
         let accepted = await fixture.driver.acknowledge(
-            DeliveryAcknowledgement(sessionID: fixture.sessionID, messageID: fixture.envelope.messageID),
+            DeliveryAcknowledgement(networkID: .test, sessionID: fixture.sessionID, messageID: fixture.envelope.messageID),
             receivedOn: relay.id,
             generation: relayGeneration
         )
@@ -94,17 +94,19 @@ struct SessionDeliveryDriverTests {
         let sessionID = SessionID()
         let sender = BeakrNetSession(
             id: sessionID,
+            networkID: .test,
             localNodeID: localNode,
             remoteNodeID: remoteNode,
             state: .active
         )
         let receiver = BeakrNetSession(
             id: sessionID,
+            networkID: .test,
             localNodeID: remoteNode,
             remoteNodeID: localNode,
             state: .active
         )
-        let coordinator = PeerRouteCoordinator(remoteNodeID: remoteNode)
+        let coordinator = PeerRouteCoordinator(networkID: .test, remoteNodeID: remoteNode)
         let driver = SessionDeliveryDriver(session: sender, coordinator: coordinator, clock: { now })
         let relay = DeliveringTransport(id: id(1), kind: .relay, receiver: receiver)
         let lan = DeliveringTransport(
@@ -214,6 +216,7 @@ struct SessionDeliveryDriverTests {
         let relay = ScriptedTransport(id: id(1), kind: .relay, results: [.success])
         let generation = await fixture.add(relay)
         let envelope = BeakrNetEnvelope(
+            networkID: .test,
             sessionID: fixture.sessionID,
             sourceNodeID: fixture.remote,
             destinationNodeID: fixture.local,
@@ -240,10 +243,11 @@ struct SessionDeliveryDriverTests {
         let envelope: BeakrNetEnvelope
 
         init(policy: DeliveryPolicy = .standard, clock: @escaping SessionDeliveryDriver.Clock = Date.init) {
-            session = BeakrNetSession(id: sessionID, localNodeID: local, remoteNodeID: remote, state: .active)
-            coordinator = PeerRouteCoordinator(remoteNodeID: remote)
+            session = BeakrNetSession(id: sessionID, networkID: .test, localNodeID: local, remoteNodeID: remote, state: .active)
+            coordinator = PeerRouteCoordinator(networkID: .test, remoteNodeID: remote)
             driver = SessionDeliveryDriver(session: session, coordinator: coordinator, clock: clock)
             envelope = BeakrNetEnvelope(
+                networkID: .test,
                 sessionID: sessionID,
                 sourceNodeID: local,
                 destinationNodeID: remote,
@@ -298,6 +302,7 @@ struct SessionDeliveryDriverTests {
         policy: DeliveryPolicy = .standard
     ) -> BeakrNetEnvelope {
         BeakrNetEnvelope(
+            networkID: .test,
             sessionID: sessionID,
             sourceNodeID: source,
             destinationNodeID: destination,
@@ -418,6 +423,7 @@ private actor DeliveringTransport: BeakrNetTransport {
         let acceptance = try await receiver.accept(envelope)
         deliveries.append(RecordedDelivery(envelope: envelope, acceptance: acceptance))
         latestAcknowledgement = DeliveryAcknowledgement(
+            networkID: envelope.networkID,
             sessionID: envelope.sessionID,
             messageID: envelope.messageID
         )

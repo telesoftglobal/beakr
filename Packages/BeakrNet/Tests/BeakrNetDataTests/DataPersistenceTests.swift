@@ -30,6 +30,11 @@ struct DataPersistenceTests {
         #expect(await restored.result(for: key)?.messageID == envelope.messageID)
         #expect(try await restored.acknowledge(envelope.messageID))
         #expect(try await restored.pending(now: now).isEmpty)
+        #expect(try await restored.removeRecordedResult(envelope.messageID))
+
+        let afterDeletion = try await PersistentDataState.open(fileURL: url, now: now)
+        #expect(await afterDeletion.result(for: envelope.messageID) == nil)
+        #expect(await afterDeletion.result(for: key) == nil)
     }
 
     @Test("Expired outgoing work is removed during restart")
@@ -43,6 +48,33 @@ struct DataPersistenceTests {
 
         let restored = try await PersistentDataState.open(fileURL: url, now: start.addingTimeInterval(2))
         #expect(try await restored.pending(now: start.addingTimeInterval(2)).isEmpty)
+    }
+
+    @Test("Read-only result access does not rewrite runtime state")
+    func readOnlyResults() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("data-state.json")
+        let now = Date(timeIntervalSince1970: 1_000)
+        let state = try await PersistentDataState.open(fileURL: url, now: now)
+        let result = StoredDataResult(
+            messageID: MessageID(),
+            idempotencyKey: DataIdempotencyKey(),
+            response: DataMessage(
+                kind: .response,
+                operation: .init(namespace: "com.example", name: "read", version: 1),
+                correlationID: DataCorrelationID(),
+                body: Data("preserved".utf8)
+            ),
+            completedAt: now
+        )
+        try await state.record(result)
+        let dataBeforeRead = try Data(contentsOf: url)
+
+        let results = try PersistentDataState.readRecordedResults(fileURL: url)
+
+        #expect(results == [result])
+        #expect(try Data(contentsOf: url) == dataBeforeRead)
     }
 
     @Test("Outgoing capacity is bounded without evicting durable work")
@@ -91,6 +123,7 @@ struct DataPersistenceTests {
     private func makeEnvelope(id: MessageID = MessageID(), expiresAt: Date? = nil) -> BeakrNetEnvelope {
         BeakrNetEnvelope(
             messageID: id,
+            networkID: .test,
             sessionID: SessionID(),
             sourceNodeID: NodeID(),
             destinationNodeID: NodeID(),
@@ -105,7 +138,7 @@ struct DataPersistenceTests {
 
     private func makeTypedEnvelope(_ message: DataMessage, id: MessageID = MessageID(), now: Date) throws -> BeakrNetEnvelope {
         try DataCodec().makeEnvelope(
-            for: message, sessionID: SessionID(), sourceNodeID: NodeID(), destinationNodeID: NodeID(),
+            for: message, networkID: .test, sessionID: SessionID(), sourceNodeID: NodeID(), destinationNodeID: NodeID(),
             messageID: id, sequenceNumber: 1, createdAt: now,
             deliveryPolicy: .init(durability: .durable, expiresAt: now.addingTimeInterval(60))
         )

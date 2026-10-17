@@ -24,6 +24,17 @@ struct CertificateEnrollmentNetworkTests {
         ])
     }
 
+    @Test("A successful enrollment publishes membership before returning")
+    func publishesMembership() async throws {
+        let publisher = RecordingMembershipPublisher()
+        let fixture = try NetworkEnrollmentFixture(membershipPublisher: publisher)
+
+        let exchange = try await fixture.client.renewCertificate()
+
+        #expect(await publisher.publications == 1)
+        #expect(await publisher.lastNodeID == exchange.request.nodeID)
+    }
+
     @Test("A challenge is single-use through the endpoint")
     func replayRejected() async throws {
         let fixture = try NetworkEnrollmentFixture()
@@ -107,6 +118,16 @@ struct CertificateEnrollmentNetworkTests {
             )
         }
     }
+
+    @Test("Pinned transport rejects a malformed authority certificate")
+    func malformedTrustAnchor() {
+        #expect(throws: CertificateEnrollmentNetworkError.invalidTrustAnchor) {
+            try URLSessionCertificateEnrollmentTransport(
+                baseURL: URL(string: "https://authority.example")!,
+                trustedAuthorityCertificateDER: Data("not-a-certificate".utf8)
+            )
+        }
+    }
 }
 
 private struct NetworkEnrollmentFixture {
@@ -118,10 +139,11 @@ private struct NetworkEnrollmentFixture {
     let transport: LoopbackEnrollmentTransport
     let client: CertificateEnrollmentNetworkClient
 
-    init() throws {
+    init(membershipPublisher: (any CertificateEnrollmentMembershipPublishing)? = nil) throws {
         credential = try authority.issue(
             nodeID: identity.nodeID,
             nodePublicKey: identity.publicKeyRepresentation,
+            networkID: .test,
             environment: "development",
             validity: 604_800,
             serviceScopes: ["lan"],
@@ -129,6 +151,7 @@ private struct NetworkEnrollmentFixture {
         )
         let validator = CertificateEnrollmentValidator(
             trustedAuthorityPublicKey: authority.publicKeyRepresentation,
+            networkID: .test,
             environment: "development"
         )
         let challengeService = try CertificateEnrollmentChallengeService(
@@ -144,6 +167,7 @@ private struct NetworkEnrollmentFixture {
         endpoint = CertificateEnrollmentHTTPEndpoint(
             challenges: challengeService,
             enrollment: enrollment,
+            membershipPublisher: membershipPublisher,
             now: { fixedNow }
         )
         transport = LoopbackEnrollmentTransport(endpoint: endpoint)
@@ -154,6 +178,20 @@ private struct NetworkEnrollmentFixture {
             environment: "development",
             requestedValidity: 86_400
         )
+    }
+}
+
+private actor RecordingMembershipPublisher: CertificateEnrollmentMembershipPublishing {
+    private(set) var publications = 0
+    private(set) var lastNodeID: NodeID?
+
+    func publishEnrollment(
+        request: CertificateEnrollmentRequest,
+        response: CertificateEnrollmentResponse,
+        now: Date
+    ) async throws {
+        publications += 1
+        lastNodeID = request.nodeID
     }
 }
 
@@ -180,6 +218,7 @@ private actor NetworkTestCertificateIssuer: CertificateMaterialIssuing {
     func issueCertificate(
         nodeID: NodeID,
         nodePublicKey: Data,
+        certificateSigningRequestDER: Data,
         validity: TimeInterval,
         now: Date
     ) async throws -> IssuedCertificateMaterial {

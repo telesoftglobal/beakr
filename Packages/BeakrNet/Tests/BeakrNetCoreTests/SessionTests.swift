@@ -8,7 +8,7 @@ struct SessionTests {
     func transportReplacement() async {
         let localNodeID = NodeID()
         let remoteNodeID = NodeID()
-        let session = BeakrNetSession(localNodeID: localNodeID, remoteNodeID: remoteNodeID)
+        let session = BeakrNetSession(networkID: .test, localNodeID: localNodeID, remoteNodeID: remoteNodeID)
         let localTransportID = TransportID()
         let relayTransportID = TransportID()
 
@@ -28,11 +28,13 @@ struct SessionTests {
         let sessionID = SessionID()
         let session = BeakrNetSession(
             id: sessionID,
+            networkID: .test,
             localNodeID: localNodeID,
             remoteNodeID: remoteNodeID,
             state: .active
         )
         let envelope = BeakrNetEnvelope(
+            networkID: .test,
             sessionID: sessionID,
             sourceNodeID: remoteNodeID,
             destinationNodeID: localNodeID,
@@ -52,11 +54,13 @@ struct SessionTests {
         let sessionID = SessionID()
         let session = BeakrNetSession(
             id: sessionID,
+            networkID: .test,
             localNodeID: localNodeID,
             remoteNodeID: remoteNodeID,
             state: .active
         )
         let envelope = BeakrNetEnvelope(
+            networkID: .test,
             sessionID: sessionID,
             sourceNodeID: localNodeID,
             destinationNodeID: remoteNodeID,
@@ -72,11 +76,51 @@ struct SessionTests {
         #expect(
             await session.acknowledge(
                 DeliveryAcknowledgement(
+                    networkID: .test,
                     sessionID: sessionID,
                     messageID: envelope.messageID
                 )
             )
         )
         #expect(await session.pendingDelivery(for: envelope.messageID) == nil)
+    }
+
+    @Test("A session rejects another network before duplicate or acknowledgement state changes")
+    func crossNetworkIsolation() async throws {
+        let otherNetwork = NetworkID(rawValue: UUID(uuidString: "B10E0000-0000-4000-8000-000000000001")!)
+        let local = NodeID()
+        let remote = NodeID()
+        let sessionID = SessionID()
+        let session = BeakrNetSession(
+            id: sessionID,
+            networkID: .test,
+            localNodeID: local,
+            remoteNodeID: remote,
+            state: .active
+        )
+        let incoming = BeakrNetEnvelope(
+            networkID: otherNetwork,
+            sessionID: sessionID,
+            sourceNodeID: remote,
+            destinationNodeID: local,
+            sequenceNumber: 1,
+            payloadType: "ping",
+            payload: Data()
+        )
+
+        #expect(try await session.accept(incoming) == .wrongNetwork)
+
+        let pending = BeakrNetEnvelope(
+            networkID: .test,
+            sessionID: sessionID,
+            sourceNodeID: local,
+            destinationNodeID: remote,
+            sequenceNumber: 2,
+            payloadType: "ping",
+            payload: Data()
+        )
+        try await session.queueForDelivery(pending)
+        #expect(await session.acknowledge(.init(networkID: otherNetwork, sessionID: sessionID, messageID: pending.messageID)) == false)
+        #expect(await session.pendingDelivery(for: pending.messageID) != nil)
     }
 }

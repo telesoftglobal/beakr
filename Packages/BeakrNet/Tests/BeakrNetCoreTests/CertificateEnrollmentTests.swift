@@ -197,6 +197,7 @@ private actor RecordingCertificateIssuer: CertificateMaterialIssuing {
     func issueCertificate(
         nodeID: NodeID,
         nodePublicKey: Data,
+        certificateSigningRequestDER: Data,
         validity: TimeInterval,
         now: Date
     ) async throws -> IssuedCertificateMaterial {
@@ -230,6 +231,7 @@ private struct Fixture {
         let credential = try authority.issue(
             nodeID: identity.nodeID,
             nodePublicKey: identity.publicKeyRepresentation,
+            networkID: .test,
             environment: environment,
             validity: 3_600,
             serviceScopes: scopes,
@@ -254,6 +256,7 @@ private struct Fixture {
         )
         validator = CertificateEnrollmentValidator(
             trustedAuthorityPublicKey: authority.publicKeyRepresentation,
+            networkID: .test,
             environment: environment
         )
     }

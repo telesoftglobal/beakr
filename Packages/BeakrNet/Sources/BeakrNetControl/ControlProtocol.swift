@@ -10,11 +10,13 @@ public enum ControlMessageType: String, CaseIterable, Codable, Sendable {
 }
 
 public struct ControlContext: Codable, Equatable, Sendable {
+    public let networkID: NetworkID
     public let sourceNodeID: NodeID
     public let destinationNodeID: NodeID
     public let sessionID: SessionID
 
-    public init(sourceNodeID: NodeID, destinationNodeID: NodeID, sessionID: SessionID) {
+    public init(networkID: NetworkID, sourceNodeID: NodeID, destinationNodeID: NodeID, sessionID: SessionID) {
+        self.networkID = networkID
         self.sourceNodeID = sourceNodeID
         self.destinationNodeID = destinationNodeID
         self.sessionID = sessionID
@@ -119,6 +121,7 @@ public enum ControlMessage: Equatable, Sendable {
 private struct WirePayload<Body: Codable & Sendable>: Codable, Sendable {
     let type: String
     let version: Int
+    let networkID: NetworkID
     let sourceNodeID: NodeID
     let destinationNodeID: NodeID
     let sessionID: SessionID
@@ -224,6 +227,7 @@ public struct ControlCodec: Sendable {
     ) throws -> BeakrNetEnvelope {
         BeakrNetEnvelope(
             messageID: messageID,
+            networkID: message.header.context.networkID,
             sessionID: message.header.context.sessionID,
             sourceNodeID: message.header.context.sourceNodeID,
             destinationNodeID: message.header.context.destinationNodeID,
@@ -242,6 +246,7 @@ public struct ControlCodec: Sendable {
         return try encoder.encode(WirePayload(
             type: header.type.rawValue,
             version: header.version,
+            networkID: header.context.networkID,
             sourceNodeID: header.context.sourceNodeID,
             destinationNodeID: header.context.destinationNodeID,
             sessionID: header.context.sessionID,
@@ -255,6 +260,7 @@ public struct ControlCodec: Sendable {
 
     private func makeHeader<Body>(_ wire: WirePayload<Body>, _ type: ControlMessageType) -> ControlHeader {
         ControlHeader(type: type, version: wire.version, context: ControlContext(
+            networkID: wire.networkID,
             sourceNodeID: wire.sourceNodeID,
             destinationNodeID: wire.destinationNodeID,
             sessionID: wire.sessionID
@@ -336,7 +342,7 @@ public actor ControlDispatcher {
             return reject(envelope, reason: map(error), mayRespond: responseAllowed(for: envelope.payloadType))
         } catch { return reject(envelope, reason: .malformed, mayRespond: false) }
 
-        guard message.header.context == ControlContext(sourceNodeID: envelope.sourceNodeID, destinationNodeID: envelope.destinationNodeID, sessionID: envelope.sessionID) else {
+        guard message.header.context == ControlContext(networkID: envelope.networkID, sourceNodeID: envelope.sourceNodeID, destinationNodeID: envelope.destinationNodeID, sessionID: envelope.sessionID) else {
             return reject(envelope, reason: .malformed, mayRespond: mayRespond(to: message))
         }
         guard authorization.permits(source: envelope.sourceNodeID, type: message.type) else {
@@ -395,7 +401,7 @@ public actor ControlDispatcher {
     private func reject(_ envelope: BeakrNetEnvelope, reason: ControlProtocolErrorCode, mayRespond: Bool) -> ControlDispatchResult {
         eventSink(.rejected(messageID: envelope.messageID, reason: reason))
         guard mayRespond else { return .rejected(reason, response: nil) }
-        let context = ControlContext(sourceNodeID: envelope.destinationNodeID, destinationNodeID: envelope.sourceNodeID, sessionID: envelope.sessionID)
+        let context = ControlContext(networkID: envelope.networkID, sourceNodeID: envelope.destinationNodeID, destinationNodeID: envelope.sourceNodeID, sessionID: envelope.sessionID)
         return .rejected(reason, response: .protocolError(
             ControlHeader(type: .protocolError, context: context),
             ControlProtocolError(code: reason, relatedMessageID: envelope.messageID)
@@ -406,6 +412,6 @@ public actor ControlDispatcher {
 public extension ControlMessage {
     var coreAcknowledgement: DeliveryAcknowledgement? {
         guard case .deliveryAcknowledgement(let header, let body) = self else { return nil }
-        return DeliveryAcknowledgement(sessionID: header.context.sessionID, messageID: body.acknowledgedMessageID)
+        return DeliveryAcknowledgement(networkID: header.context.networkID, sessionID: header.context.sessionID, messageID: body.acknowledgedMessageID)
     }
 }

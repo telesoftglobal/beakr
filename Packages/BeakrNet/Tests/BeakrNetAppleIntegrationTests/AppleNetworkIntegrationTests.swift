@@ -58,6 +58,9 @@ private final class Fixture: @unchecked Sendable {
     private let listenerEvents = Events<BonjourListenerEvent>()
     private let registry = NetworkBonjourEndpointRegistry()
     private let authority = CredentialAuthority()
+    private let networkID = NetworkID(
+        rawValue: UUID(uuidString: "A1100000-0000-4000-8000-000000000001")!
+    )
     private let clientIdentity = NodeIdentity()
     private let serverIdentity = NodeIdentity()
     private let now = Date(timeIntervalSince1970: 2_000_000_000)
@@ -75,6 +78,7 @@ private final class Fixture: @unchecked Sendable {
         let clientCredential = try authority.issue(
             nodeID: clientIdentity.nodeID,
             nodePublicKey: clientIdentity.publicKeyRepresentation,
+            networkID: networkID,
             environment: "integration",
             validity: 3_600,
             serviceScopes: ["lan"],
@@ -83,6 +87,7 @@ private final class Fixture: @unchecked Sendable {
         let serverCredential = try authority.issue(
             nodeID: serverIdentity.nodeID,
             nodePublicKey: serverIdentity.publicKeyRepresentation,
+            networkID: networkID,
             environment: "integration",
             validity: 3_600,
             serviceScopes: ["lan"],
@@ -110,6 +115,7 @@ private final class Fixture: @unchecked Sendable {
             identity: clientIdentity,
             credential: clientCredential,
             trustedAuthorityPublicKey: authority.publicKeyRepresentation,
+            networkID: networkID,
             environment: "integration",
             revocationSnapshot: snapshot,
             localCertificateDER: clientDER,
@@ -121,6 +127,7 @@ private final class Fixture: @unchecked Sendable {
             identity: serverIdentity,
             credential: serverCredential,
             trustedAuthorityPublicKey: authority.publicKeyRepresentation,
+            networkID: networkID,
             environment: "integration",
             revocationSnapshot: snapshot,
             localCertificateDER: serverDER,
@@ -207,6 +214,7 @@ private final class Fixture: @unchecked Sendable {
 
     func envelope() -> BeakrNetEnvelope {
         BeakrNetEnvelope(
+            networkID: networkID,
             sessionID: SessionID(),
             sourceNodeID: clientIdentity.nodeID,
             destinationNodeID: serverIdentity.nodeID,

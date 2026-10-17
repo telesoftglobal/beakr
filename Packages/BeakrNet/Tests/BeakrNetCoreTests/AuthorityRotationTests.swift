@@ -188,6 +188,7 @@ struct AuthorityRotationTests {
         let oldCredential = try old.issue(
             nodeID: identity.nodeID,
             nodePublicKey: identity.publicKeyRepresentation,
+            networkID: .test,
             environment: "production",
             validity: 7_200,
             now: now
@@ -195,6 +196,7 @@ struct AuthorityRotationTests {
         let nextCredential = try next.issue(
             nodeID: identity.nodeID,
             nodePublicKey: identity.publicKeyRepresentation,
+            networkID: .test,
             environment: "production",
             validity: 7_200,
             now: now
@@ -214,17 +216,19 @@ struct AuthorityRotationTests {
             now: now
         )
 
-        try rotated.verify(oldCredential, environment: "production", now: now)
-        try rotated.verify(nextCredential, environment: "production", now: now)
+        try rotated.verify(oldCredential, networkID: .test, environment: "production", now: now)
+        try rotated.verify(nextCredential, networkID: .test, environment: "production", now: now)
         #expect(throws: CredentialVerificationError.wrongIssuer) {
             try rotated.verify(
                 oldCredential,
+                networkID: .test,
                 environment: "production",
                 now: now.addingTimeInterval(3_600)
             )
         }
         try rotated.verify(
             nextCredential,
+            networkID: .test,
             environment: "production",
             now: now.addingTimeInterval(3_600)
         )

@@ -168,8 +168,12 @@ public actor SessionDeliveryDriver {
         case .accepted, .duplicate:
             acknowledgement = envelope.payloadType == DeliveryAcknowledgement.payloadType
                 ? nil
-                : DeliveryAcknowledgement(sessionID: envelope.sessionID, messageID: envelope.messageID)
-        case .wrongSession, .wrongDestination:
+                : DeliveryAcknowledgement(
+                    networkID: envelope.networkID,
+                    sessionID: envelope.sessionID,
+                    messageID: envelope.messageID
+                )
+        case .wrongNetwork, .wrongSession, .wrongDestination:
             acknowledgement = nil
         }
         return IncomingDeliveryResult(acceptance: acceptance, acknowledgement: acknowledgement)

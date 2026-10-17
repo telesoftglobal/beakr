@@ -211,6 +211,7 @@ public struct AuthorityTrustState: Codable, Equatable, Sendable {
 public extension AuthorityTrustState {
     func verify(
         _ credential: NodeCredential,
+        networkID: NetworkID,
         environment: String,
         revokedCredentialIDs: Set<UUID> = [],
         now: Date = Date(),
@@ -222,6 +223,7 @@ public extension AuthorityTrustState {
         try CredentialVerifier.verify(
             credential,
             trustedAuthorityPublicKey: key,
+            networkID: networkID,
             environment: environment,
             revokedCredentialIDs: revokedCredentialIDs,
             now: now,

@@ -12,7 +12,7 @@ struct TransferStagingStoreTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let bytes = Data("abcdef".utf8), id = TransferID(), now = Date(timeIntervalSince1970: 1_000)
         let manifest = TransferManifest(
-            transferID: id, context: .init(sessionID: SessionID(), sourceNodeID: NodeID(), destinationNodeID: NodeID()),
+            transferID: id, context: .init(networkID: .test, sessionID: SessionID(), sourceNodeID: NodeID(), destinationNodeID: NodeID()),
             byteCount: 6, chunkSize: 3, chunkCount: 2, contentDigest: Data(SHA256.hash(data: bytes)),
             mediaType: "application/octet-stream", expiresAt: now.addingTimeInterval(60)
         )
@@ -83,7 +83,7 @@ struct TransferStagingStoreTests {
     }
 
     private func makeManifest(id: TransferID, bytes: Data, now: Date, lifetime: TimeInterval = 60) -> TransferManifest {
-        .init(transferID: id, context: .init(sessionID: SessionID(), sourceNodeID: NodeID(), destinationNodeID: NodeID()),
+        .init(transferID: id, context: .init(networkID: .test, sessionID: SessionID(), sourceNodeID: NodeID(), destinationNodeID: NodeID()),
               byteCount: UInt64(bytes.count), chunkSize: UInt32(bytes.count), chunkCount: 1,
               contentDigest: Data(SHA256.hash(data: bytes)), mediaType: "x", expiresAt: now.addingTimeInterval(lifetime))
     }

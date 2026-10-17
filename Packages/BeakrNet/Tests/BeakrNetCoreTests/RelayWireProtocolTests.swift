@@ -12,6 +12,7 @@ struct RelayWireProtocolTests {
         let credential = try CredentialAuthority().issue(
             nodeID: identity.nodeID,
             nodePublicKey: identity.publicKeyRepresentation,
+            networkID: .test,
             environment: "test",
             validity: 60
         )
@@ -27,6 +28,7 @@ struct RelayWireProtocolTests {
     @Test("An envelope frame round trips")
     func envelopeRoundTrip() throws {
         let envelope = BeakrNetEnvelope(
+            networkID: .test,
             sessionID: SessionID(),
             sourceNodeID: NodeID(),
             destinationNodeID: NodeID(),

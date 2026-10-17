@@ -22,12 +22,14 @@ public struct TransportBinding: Codable, Equatable, Sendable {
 public enum SessionAcceptance: Equatable, Sendable {
     case accepted
     case duplicate
+    case wrongNetwork
     case wrongSession
     case wrongDestination
 }
 
 public actor BeakrNetSession {
     public let id: SessionID
+    public let networkID: NetworkID
     public let localNodeID: NodeID
     public let remoteNodeID: NodeID
 
@@ -41,12 +43,14 @@ public actor BeakrNetSession {
 
     public init(
         id: SessionID = SessionID(),
+        networkID: NetworkID,
         localNodeID: NodeID,
         remoteNodeID: NodeID,
         state: SessionState = .establishing,
         now: Date = Date()
     ) {
         self.id = id
+        self.networkID = networkID
         self.localNodeID = localNodeID
         self.remoteNodeID = remoteNodeID
         self.state = state
@@ -92,7 +96,8 @@ public actor BeakrNetSession {
     }
 
     public func queueForDelivery(_ envelope: BeakrNetEnvelope, now: Date = Date()) throws {
-        guard envelope.sessionID == id,
+        guard envelope.networkID == networkID,
+              envelope.sessionID == id,
               envelope.sourceNodeID == localNodeID,
               envelope.destinationNodeID == remoteNodeID else { return }
         guard pendingDeliveries[envelope.messageID] == nil else { return }
@@ -122,7 +127,8 @@ public actor BeakrNetSession {
 
     @discardableResult
     public func acknowledge(_ acknowledgement: DeliveryAcknowledgement) -> Bool {
-        guard acknowledgement.sessionID == id,
+        guard acknowledgement.networkID == networkID,
+              acknowledgement.sessionID == id,
               pendingDeliveries.removeValue(forKey: acknowledgement.messageID) != nil else {
             return false
         }
@@ -151,6 +157,7 @@ public actor BeakrNetSession {
     }
 
     public func accept(_ envelope: BeakrNetEnvelope, now: Date = Date()) throws -> SessionAcceptance {
+        guard envelope.networkID == networkID else { return .wrongNetwork }
         guard envelope.sessionID == id else { return .wrongSession }
         guard envelope.destinationNodeID == localNodeID else { return .wrongDestination }
         try envelope.validate(now: now)

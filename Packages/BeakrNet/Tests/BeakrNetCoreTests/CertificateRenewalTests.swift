@@ -109,6 +109,7 @@ private struct RenewalFixture {
         let credential = try authority.issue(
             nodeID: identity.nodeID,
             nodePublicKey: identity.publicKeyRepresentation,
+            networkID: .test,
             environment: "development",
             validity: 604_800,
             serviceScopes: ["lan"],
@@ -184,6 +185,9 @@ private struct RenewalFixture {
                 requestID: request.requestID,
                 nodeID: identity.nodeID,
                 nodePublicKey: identity.publicKeyRepresentation,
+                certificateSigningRequestDER: try identity.certificateSigningRequest(
+                    commonName: "BeakrNet Node \(identity.nodeID.rawValue.uuidString.lowercased())"
+                ),
                 validity: 86_400
             ),
             leafCertificateDER: Data(leaf.utf8),

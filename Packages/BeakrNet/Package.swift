@@ -24,7 +24,8 @@ let package = Package(
         .executable(name: "BeakrNetHandoffLab", targets: ["BeakrNetHandoffLab"]),
         .executable(name: "BeakrNetRelayServer", targets: ["BeakrNetRelayServer"]),
         .executable(name: "BeakrNetNodeCLI", targets: ["BeakrNetNodeCLI"]),
-        .executable(name: "BeakrNetCredentialTool", targets: ["BeakrNetCredentialTool"])
+        .executable(name: "BeakrNetCredentialTool", targets: ["BeakrNetCredentialTool"]),
+        .executable(name: "BeakrNetAuthorityServer", targets: ["BeakrNetAuthorityServer"])
     ],
     targets: [
         .target(name: "BeakrNetCore"),
@@ -46,11 +47,11 @@ let package = Package(
         ),
         .target(
             name: "BeakrNetHost",
-            dependencies: ["BeakrNetCore", "BeakrNetControl", "BeakrNetData", "BeakrBlackboard", "BeakrNetTransfer", "BeakrNetSecurity", "BeakrNetAuthority"]
+            dependencies: ["BeakrNetCore", "BeakrNetControl", "BeakrNetData", "BeakrBlackboard", "BeakrNetTransfer", "BeakrNetSecurity", "BeakrNetAuthority", "BeakrNetOperations"]
         ),
         .target(
             name: "BeakrNetOperations",
-            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority", "BeakrNetHost"]
+            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority"]
         ),
         .target(
             name: "BeakrNetSecurity",
@@ -84,6 +85,10 @@ let package = Package(
             name: "BeakrNetCredentialTool",
             dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority"]
         ),
+        .executableTarget(
+            name: "BeakrNetAuthorityServer",
+            dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority", "BeakrNetOperations"]
+        ),
         .testTarget(
             name: "BeakrNetCoreTests",
             dependencies: ["BeakrNetCore", "BeakrNetSecurity", "BeakrNetAuthority", "BeakrNetRelayTransport", "BeakrNetTestSupport"]
@@ -106,11 +111,11 @@ let package = Package(
         ),
         .testTarget(
             name: "BeakrNetHostTests",
-            dependencies: ["BeakrNetHost", "BeakrNetCore", "BeakrNetData", "BeakrBlackboard", "BeakrNetTransfer"]
+            dependencies: ["BeakrNetHost", "BeakrNetCore", "BeakrNetData", "BeakrBlackboard", "BeakrNetTransfer", "BeakrNetAuthority"]
         ),
         .testTarget(
             name: "BeakrNetOperationsTests",
-            dependencies: ["BeakrNetOperations", "BeakrNetCore"]
+            dependencies: ["BeakrNetOperations", "BeakrNetCore", "BeakrNetAuthority", "BeakrNetSecurity"]
         ),
         .testTarget(
             name: "BeakrNetAppleIntegrationTests",

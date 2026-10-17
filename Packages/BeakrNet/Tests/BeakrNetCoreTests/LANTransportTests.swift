@@ -104,6 +104,7 @@ private struct Fixture {
         initiatorCredential = try authority.issue(
             nodeID: initiatorIdentity.nodeID,
             nodePublicKey: initiatorIdentity.publicKeyRepresentation,
+            networkID: .test,
             environment: "test",
             validity: 3_600,
             serviceScopes: ["lan"],
@@ -112,6 +113,7 @@ private struct Fixture {
         acceptorCredential = try authority.issue(
             nodeID: acceptorIdentity.nodeID,
             nodePublicKey: acceptorIdentity.publicKeyRepresentation,
+            networkID: .test,
             environment: "test",
             validity: 3_600,
             serviceScopes: ["lan"],
@@ -131,6 +133,7 @@ private struct Fixture {
             identity: initiatorIdentity,
             credential: initiatorCredential,
             trustedAuthorityPublicKey: authority.publicKeyRepresentation,
+            networkID: .test,
             environment: "test",
             revocationSnapshot: snapshot,
             localCertificateDER: initiatorCertificate,
@@ -142,6 +145,7 @@ private struct Fixture {
             identity: acceptorIdentity,
             credential: acceptorCredential,
             trustedAuthorityPublicKey: authority.publicKeyRepresentation,
+            networkID: .test,
             environment: "test",
             revocationSnapshot: snapshot,
             localCertificateDER: acceptorCertificate,
@@ -171,6 +175,7 @@ private struct Fixture {
 
     func envelope() -> BeakrNetEnvelope {
         BeakrNetEnvelope(
+            networkID: .test,
             sessionID: SessionID(),
             sourceNodeID: initiatorIdentity.nodeID,
             destinationNodeID: acceptorIdentity.nodeID,

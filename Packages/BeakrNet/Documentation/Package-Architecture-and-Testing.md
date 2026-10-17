@@ -44,7 +44,7 @@ BeakrNet
 
 `BeakrNetData` depends on `BeakrNetControl` and `BeakrNetCore`. It owns reusable Data message semantics and durable node-side protocol state, while application repositories own product mutations and schemas. It likewise remains independent of SwiftUI, Network, Security, and application targets.
 
-Do not create a separate Xcode application project for Milestone 6. The existing `BeakrNetDemoIntegrationTests` signed host remains the place for a small number of end-to-end Apple-platform checks.
+Do not place product networking implementation in an Xcode application project. The dedicated `BeakrNetIntegrationHost` project provides only the signed process required for a small number of end-to-end Apple-platform checks; all reusable behavior remains in the `BeakrNet` package.
 
 ## Change boundaries
 
@@ -99,7 +99,7 @@ Use `BeakrNetTestSupport` and the handoff laboratory to prove that typed Control
 Keep Apple networking and security behavior in the existing opt-in integration layers:
 
 - The SwiftPM Apple integration target covers real macOS Bonjour, listeners, connections, framing, and path loss where the host permits them.
-- `BeakrNetDemoIntegrationTests` supplies the signed macOS, Simulator, and physical-device host for Local Network permission, mutual TLS, Keychain, and sandbox behavior.
+- `BeakrNetIntegrationHost` and its `BeakrNetIntegrationTests` target supply the signed macOS, Simulator, and physical-device host for Local Network permission, mutual TLS, Keychain, and sandbox behavior.
 
 Milestone 6 should add only enough signed-host coverage to prove that a typed Control message crosses a real authenticated connection and dispatches once. Payload codec and dispatcher edge cases belong in pure tests.
 

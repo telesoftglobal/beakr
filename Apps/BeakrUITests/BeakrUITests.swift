@@ -1,41 +1,40 @@
-//
-//  BeakrUITests.swift
-//  BeakrUITests
-//
-//  Created by Ice-9 on 2026-10-03.
-//
-
 import XCTest
 
 final class BeakrUITests: XCTestCase {
-
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
-    }
-
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testMailStyleShellProvidesToolbarWindowsAndDialogs() throws {
         let app = XCUIApplication()
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+        let composeButton = app.buttons["Compose"]
+        let contactsButton = app.buttons["Contacts"]
+        let networksButton = app.buttons["Networks"]
+        let shareNetworkButton = app.buttons["Share Network"]
+        let deviceButton = app.buttons["Device"]
+        let mailboxActionsButton = app.menuButtons["Mailbox Actions"]
+
+        XCTAssertTrue(composeButton.waitForExistence(timeout: 5))
+        XCTAssertTrue(contactsButton.exists)
+        XCTAssertTrue(networksButton.exists)
+        XCTAssertTrue(shareNetworkButton.exists)
+        XCTAssertTrue(deviceButton.exists)
+        XCTAssertTrue(mailboxActionsButton.exists)
+
+        networksButton.click()
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 2))
+        app.typeKey("w", modifierFlags: .command)
+
+        contactsButton.click()
+        XCTAssertTrue(app.staticTexts["Contacts Management"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["Done"].exists)
     }
 
     @MainActor
     func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
             XCUIApplication().launch()
         }

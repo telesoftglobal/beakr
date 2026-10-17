@@ -18,17 +18,17 @@ struct ChannelContractTests {
         #expect(decoded.channel == channel)
     }
 
-    @Test("Schema version 2 has a stable encoded fixture")
-    func goldenVersion2Fixture() throws {
+    @Test("Schema version 3 has a stable network-scoped encoded fixture")
+    func goldenVersion3Fixture() throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let encoded = try encoder.encode(makeEnvelope(channel: .data))
-        let fixture = #"{"channel":"data","createdAt":0,"deliveryPolicy":{"durability":"queued","priority":0},"destinationNodeID":{"rawValue":"33333333-3333-3333-3333-333333333333"},"messageID":{"rawValue":"44444444-4444-4444-4444-444444444444"},"payload":"aGVsbG8=","payloadType":"com.example.message","representation":"full","schemaVersion":2,"sequenceNumber":42,"sessionID":{"rawValue":"11111111-1111-1111-1111-111111111111"},"sourceNodeID":{"rawValue":"22222222-2222-2222-2222-222222222222"}}"#
+        let fixture = #"{"channel":"data","createdAt":0,"deliveryPolicy":{"durability":"queued","priority":0},"destinationNodeID":{"rawValue":"33333333-3333-3333-3333-333333333333"},"messageID":{"rawValue":"44444444-4444-4444-4444-444444444444"},"networkID":{"rawValue":"7E570000-0000-4000-8000-000000000001"},"payload":"aGVsbG8=","payloadType":"com.example.message","representation":"full","schemaVersion":3,"sequenceNumber":42,"sessionID":{"rawValue":"11111111-1111-1111-1111-111111111111"},"sourceNodeID":{"rawValue":"22222222-2222-2222-2222-222222222222"}}"#
 
         #expect(String(decoding: encoded, as: UTF8.self) == fixture)
     }
 
-    @Test("Version 1 and future versions are rejected", arguments: [1, 3])
+    @Test("Unscoped and future versions are rejected", arguments: [1, 2, 4])
     func unsupportedVersion(version: Int) throws {
         var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(makeEnvelope())) as? [String: Any])
         object["schemaVersion"] = version
@@ -73,7 +73,7 @@ struct ChannelContractTests {
 
     @Test("Expired messages are rejected by sessions")
     func expiredMessage() async throws {
-        let session = BeakrNetSession(id: sessionID, localNodeID: sourceNodeID, remoteNodeID: destinationNodeID)
+        let session = BeakrNetSession(id: sessionID, networkID: .test, localNodeID: sourceNodeID, remoteNodeID: destinationNodeID)
         let envelope = makeEnvelope(deliveryPolicy: DeliveryPolicy(
             durability: .queued,
             expiresAt: Date(timeIntervalSince1970: 10)
@@ -133,6 +133,7 @@ struct ChannelContractTests {
     ) -> BeakrNetEnvelope {
         BeakrNetEnvelope(
             messageID: messageID,
+            networkID: .test,
             sessionID: sessionID,
             sourceNodeID: sourceNodeID,
             destinationNodeID: destinationNodeID,

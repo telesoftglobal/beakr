@@ -10,6 +10,11 @@ public struct KeychainNodeIdentityStore: Sendable {
         self.account = account
     }
 
+    public init(namespace: ProfileKeychainNamespace) {
+        service = namespace.service
+        account = namespace.nodeSigningKeyAccount
+    }
+
     public func loadOrCreate() throws -> NodeIdentity {
         if let privateKey = try loadPrivateKey() {
             return try NodeIdentity(privateKeyRepresentation: privateKey)

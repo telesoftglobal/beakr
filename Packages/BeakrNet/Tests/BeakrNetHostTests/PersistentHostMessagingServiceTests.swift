@@ -21,7 +21,7 @@ struct PersistentHostMessagingServiceTests {
             clock: { now },
             contextProvider: { requestedDestination in
                 #expect(requestedDestination == destination)
-                return HostDeliveryContext(sessionID: session, sourceNodeID: source, sequenceNumber: 9)
+                return HostDeliveryContext(networkID: .test, sessionID: session, sourceNodeID: source, sequenceNumber: 9)
             },
             submit: { envelope in await submissions.record(envelope); return .routeUnavailable }
         )
@@ -39,7 +39,7 @@ struct PersistentHostMessagingServiceTests {
             clock: { now },
             contextProvider: { _ in
                 Issue.record("Retrying persisted work must not create a new delivery context")
-                return HostDeliveryContext(sessionID: SessionID(), sourceNodeID: NodeID(), sequenceNumber: 10)
+                return HostDeliveryContext(networkID: .test, sessionID: SessionID(), sourceNodeID: NodeID(), sequenceNumber: 10)
             },
             submit: { envelope in await submissions.record(envelope); return .routeUnavailable }
         )
@@ -58,7 +58,7 @@ struct PersistentHostMessagingServiceTests {
         let correlationID = DataCorrelationID()
         let service = PersistentHostMessagingService(
             state: state,
-            contextProvider: { _ in HostDeliveryContext(sessionID: SessionID(), sourceNodeID: NodeID(), sequenceNumber: 1) },
+            contextProvider: { _ in HostDeliveryContext(networkID: .test, sessionID: SessionID(), sourceNodeID: NodeID(), sequenceNumber: 1) },
             submit: { _ in .routeUnavailable }
         )
         let message = DataMessage(kind: .message,

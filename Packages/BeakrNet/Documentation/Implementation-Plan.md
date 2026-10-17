@@ -217,7 +217,7 @@ The October 2026 closure audit verified the current slice as follows:
 - The opt-in macOS integration target verifies real `NWListener`/`NWBrowser` discovery, TLS establishment, framed Network-framework I/O, the authenticated LAN handshake, envelope delivery, path-loss diagnostics, and teardown.
 - The complete deterministic package suite passes independently of Apple networking services.
 
-The signed `BeakrNetDemoIntegrationTests` suite was reported successful on macOS, iOS Simulator, and a physical iPhone on October 3, 2026. These runs covered mutual TLS 1.3, encrypted transfer, wrong-authority rejection, expired-leaf rejection, missing-client-identity rejection, signing and installation, and physical-device Local Network authorization. The reusable `LANTLSConfiguration` constrains TLS to 1.3, installs the local identity, requires peer authentication in both roles, and applies either provisional self-signed development trust or explicit production authority anchors.
+The signed suite, originally hosted by `BeakrNetDemoIntegrationTests` and now owned by the dedicated `BeakrNetIntegrationHost`, was reported successful on macOS, iOS Simulator, and a physical iPhone on October 3, 2026. These runs covered mutual TLS 1.3, encrypted transfer, wrong-authority rejection, expired-leaf rejection, missing-client-identity rejection, signing and installation, and physical-device Local Network authorization. The reusable `LANTLSConfiguration` constrains TLS to 1.3, installs the local identity, requires peer authentication in both roles, and applies either provisional self-signed development trust or explicit production authority anchors.
 
 Milestone 4 is closed. Certificate enrollment, renewal, authority rotation, and operational revocation propagation belong to the next certificate-lifecycle milestone.
 
@@ -262,6 +262,10 @@ The October 2026 closure audit verified:
 - Deterministic unit tests remain independent of network services. Real OpenSSL, Keychain, Bonjour, Network.framework, mutual-TLS, Simulator, and physical-device behavior remains in the opt-in integration layers documented separately.
 
 Milestone 5 is closed. Production deployment still owns authority-key custody, HTTP hosting and rate limits, background execution and push policy, telemetry export, and the selected offline grace window.
+
+### Device invitation bootstrap
+
+The application integration that follows Milestone 5 now includes additional-device bootstrap. An authority can issue a short-lived, signed invitation containing only public network trust material. A joining device binds that invitation to its newly generated node key with proof of possession, after which `NetworkInvitationService` issues the device-specific credential. Invitations are single-use, network- and environment-bound, fail closed on expiry or tampering, and persist their consumption ledger so restarting the authority cannot replay an invitation. The embedded HTTPS authority exposes the bounded `/v1/network-join` endpoint, and Beakr provides authoritative-Mac invitation generation plus joining-device import. Invitations can be transferred as a QR code, through the system share sheet, or as canonical JSON; the iOS scanner accepts only canonical Beakr invitation payloads. The joining device generates and retains its own private key locally, pins the invitation's CA for the join request, verifies the returned authority-signed credential, saves its profile, and then proceeds through the existing operational-certificate enrollment gate. No private authority or node key is placed in an invitation.
 
 WatchConnectivity, Bluetooth Low Energy, application storage, rules, external APIs, and UI remain out of scope through Milestone 5.
 

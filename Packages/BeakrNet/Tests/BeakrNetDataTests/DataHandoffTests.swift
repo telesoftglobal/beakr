@@ -17,9 +17,9 @@ struct DataHandoffTests {
             kind: .response, operation: operation, correlationID: correlation, body: Data("done".utf8)
         ))
         let dispatcher = DataDispatcher(supportedOperations: [operation], handler: handler, clock: { now })
-        let receiver = BeakrNetSession(id: sessionID, localNodeID: remoteNode, remoteNodeID: localNode, state: .active, now: now)
-        let sender = BeakrNetSession(id: sessionID, localNodeID: localNode, remoteNodeID: remoteNode, state: .active, now: now)
-        let coordinator = PeerRouteCoordinator(remoteNodeID: remoteNode)
+        let receiver = BeakrNetSession(id: sessionID, networkID: .test, localNodeID: remoteNode, remoteNodeID: localNode, state: .active, now: now)
+        let sender = BeakrNetSession(id: sessionID, networkID: .test, localNodeID: localNode, remoteNodeID: remoteNode, state: .active, now: now)
+        let coordinator = PeerRouteCoordinator(networkID: .test, remoteNodeID: remoteNode)
         let driver = SessionDeliveryDriver(session: sender, coordinator: coordinator, clock: { now })
         let relay = DispatchingTransport(kind: .relay, receiver: receiver, dispatcher: dispatcher, ambiguousAfterWrite: false)
         let lan = DispatchingTransport(kind: .local, receiver: receiver, dispatcher: dispatcher, ambiguousAfterWrite: true)
@@ -31,7 +31,7 @@ struct DataHandoffTests {
             idempotencyKey: DataIdempotencyKey(), deadline: now.addingTimeInterval(30)
         )
         let envelope = try DataCodec().makeEnvelope(
-            for: request, sessionID: sessionID, sourceNodeID: localNode, destinationNodeID: remoteNode,
+            for: request, networkID: .test, sessionID: sessionID, sourceNodeID: localNode, destinationNodeID: remoteNode,
             sequenceNumber: 1, createdAt: now,
             deliveryPolicy: .init(durability: .durable, expiresAt: now.addingTimeInterval(60))
         )

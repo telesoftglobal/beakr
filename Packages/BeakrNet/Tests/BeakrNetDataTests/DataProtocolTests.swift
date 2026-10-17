@@ -141,6 +141,7 @@ struct DataProtocolTests {
     private func makeEnvelope(_ message: DataMessage, id: MessageID? = nil, sequence: UInt64 = 1) throws -> BeakrNetEnvelope {
         try DataCodec().makeEnvelope(
             for: message,
+            networkID: .test,
             sessionID: session,
             sourceNodeID: source,
             destinationNodeID: destination,
@@ -158,7 +159,7 @@ struct DataProtocolTests {
         payload: Data? = nil
     ) -> BeakrNetEnvelope {
         BeakrNetEnvelope(
-            messageID: envelope.messageID, sessionID: envelope.sessionID,
+            messageID: envelope.messageID, networkID: envelope.networkID, sessionID: envelope.sessionID,
             sourceNodeID: envelope.sourceNodeID, destinationNodeID: envelope.destinationNodeID,
             sequenceNumber: envelope.sequenceNumber, channel: channel ?? envelope.channel,
             representation: envelope.representation, deliveryPolicy: envelope.deliveryPolicy,

@@ -1,5 +1,37 @@
 import Foundation
 
+public struct NetworkID: RawRepresentable, Codable, Hashable, Sendable {
+    public let rawValue: UUID
+
+    public init(rawValue: UUID = UUID()) {
+        self.rawValue = rawValue
+    }
+}
+
+public struct NetworkProfileID: RawRepresentable, Codable, Hashable, Sendable {
+    public let rawValue: UUID
+
+    public init(rawValue: UUID = UUID()) {
+        self.rawValue = rawValue
+    }
+}
+
+public struct ContextID: RawRepresentable, Codable, Hashable, Sendable {
+    public let rawValue: UUID
+
+    public init(rawValue: UUID = UUID()) {
+        self.rawValue = rawValue
+    }
+}
+
+public struct StoreID: RawRepresentable, Codable, Hashable, Sendable {
+    public let rawValue: UUID
+
+    public init(rawValue: UUID = UUID()) {
+        self.rawValue = rawValue
+    }
+}
+
 public struct NodeID: RawRepresentable, Codable, Hashable, Sendable {
     public let rawValue: UUID
 

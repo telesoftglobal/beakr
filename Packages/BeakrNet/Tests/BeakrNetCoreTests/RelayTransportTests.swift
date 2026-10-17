@@ -15,6 +15,7 @@ struct RelayTransportTests {
         let credential = try authority.issue(
             nodeID: credentialIdentity.nodeID,
             nodePublicKey: credentialIdentity.publicKeyRepresentation,
+            networkID: .test,
             environment: "test",
             validity: 60
         )
@@ -37,6 +38,7 @@ struct RelayTransportTests {
         let credential = try authority.issue(
             nodeID: identity.nodeID,
             nodePublicKey: identity.publicKeyRepresentation,
+            networkID: .test,
             environment: "test",
             validity: 60
         )
@@ -60,6 +62,7 @@ struct RelayTransportTests {
         let credential = try authority.issue(
             nodeID: identity.nodeID,
             nodePublicKey: identity.publicKeyRepresentation,
+            networkID: .test,
             environment: "test",
             validity: 60
         )

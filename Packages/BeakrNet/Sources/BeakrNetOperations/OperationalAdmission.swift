@@ -4,6 +4,7 @@ import BeakrNetCore
 public enum OperationalEndpoint: String, Codable, Sendable {
     case enrollmentChallenge = "enrollment-challenge"
     case enrollment
+    case membershipRead = "membership-read"
     case revocationRead = "revocation-read"
     case revocationPublish = "revocation-publish"
     case administration

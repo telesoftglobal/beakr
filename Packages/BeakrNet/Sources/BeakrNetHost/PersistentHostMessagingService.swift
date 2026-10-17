@@ -3,11 +3,13 @@ import BeakrNetCore
 import BeakrNetData
 
 public struct HostDeliveryContext: Equatable, Sendable {
+    public let networkID: NetworkID
     public let sessionID: SessionID
     public let sourceNodeID: NodeID
     public let sequenceNumber: UInt64
 
-    public init(sessionID: SessionID, sourceNodeID: NodeID, sequenceNumber: UInt64) {
+    public init(networkID: NetworkID, sessionID: SessionID, sourceNodeID: NodeID, sequenceNumber: UInt64) {
+        self.networkID = networkID
         self.sessionID = sessionID
         self.sourceNodeID = sourceNodeID
         self.sequenceNumber = sequenceNumber
@@ -51,10 +53,17 @@ public actor PersistentHostMessagingService: HostMessagingService {
     }
 
     public func send(_ request: HostMessageRequest) async throws {
+        _ = try await sendRecordingEnvelope(request)
+    }
+
+    /// Sends while returning the exact durable envelope, allowing an application to
+    /// persist diagnostic provenance without reconstructing routing decisions.
+    public func sendRecordingEnvelope(_ request: HostMessageRequest) async throws -> BeakrNetEnvelope {
         let now = clock()
         let context = try await contextProvider(request.destination)
         let envelope = try codec.makeEnvelope(
             for: request.message,
+            networkID: context.networkID,
             sessionID: context.sessionID,
             sourceNodeID: context.sourceNodeID,
             destinationNodeID: request.destination,
@@ -68,6 +77,7 @@ public actor PersistentHostMessagingService: HostMessagingService {
         )
         try await state.enqueue(envelope, now: now)
         _ = try await submit(envelope)
+        return envelope
     }
 
     public func cancel(correlationID: DataCorrelationID) async throws {

@@ -40,6 +40,7 @@ public struct CertificateEnrollmentRequest: Codable, Equatable, Sendable {
     public let requestID: UUID
     public let nodeID: NodeID
     public let nodePublicKey: Data
+    public let certificateSigningRequestDER: Data
     public let credential: NodeCredential
     public let environment: String
     public let challenge: CertificateEnrollmentChallenge
@@ -51,6 +52,7 @@ public struct CertificateEnrollmentRequest: Codable, Equatable, Sendable {
         requestID: UUID = UUID(),
         nodeID: NodeID,
         nodePublicKey: Data,
+        certificateSigningRequestDER: Data = Data(),
         credential: NodeCredential,
         environment: String,
         challenge: CertificateEnrollmentChallenge,
@@ -61,6 +63,7 @@ public struct CertificateEnrollmentRequest: Codable, Equatable, Sendable {
         self.requestID = requestID
         self.nodeID = nodeID
         self.nodePublicKey = nodePublicKey
+        self.certificateSigningRequestDER = certificateSigningRequestDER
         self.credential = credential
         self.environment = environment
         self.challenge = challenge
@@ -84,6 +87,9 @@ public struct CertificateEnrollmentRequest: Codable, Equatable, Sendable {
             requestID: requestID,
             nodeID: identity.nodeID,
             nodePublicKey: identity.publicKeyRepresentation,
+            certificateSigningRequestDER: try identity.certificateSigningRequest(
+                commonName: "BeakrNet Node \(identity.nodeID.rawValue.uuidString.lowercased())"
+            ),
             credential: credential,
             environment: environment,
             challenge: challenge,
@@ -94,6 +100,7 @@ public struct CertificateEnrollmentRequest: Codable, Equatable, Sendable {
             requestID: requestID,
             nodeID: unsigned.nodeID,
             nodePublicKey: unsigned.nodePublicKey,
+            certificateSigningRequestDER: unsigned.certificateSigningRequestDER,
             credential: credential,
             environment: environment,
             challenge: challenge,
@@ -109,17 +116,20 @@ public struct ValidatedCertificateEnrollment: Equatable, Sendable {
     public let requestID: UUID
     public let nodeID: NodeID
     public let nodePublicKey: Data
+    public let certificateSigningRequestDER: Data
     public let validity: TimeInterval
 
     public init(
         requestID: UUID,
         nodeID: NodeID,
         nodePublicKey: Data,
+        certificateSigningRequestDER: Data,
         validity: TimeInterval
     ) {
         self.requestID = requestID
         self.nodeID = nodeID
         self.nodePublicKey = nodePublicKey
+        self.certificateSigningRequestDER = certificateSigningRequestDER
         self.validity = validity
     }
 }
@@ -138,6 +148,7 @@ public protocol CertificateMaterialIssuing: Sendable {
     func issueCertificate(
         nodeID: NodeID,
         nodePublicKey: Data,
+        certificateSigningRequestDER: Data,
         validity: TimeInterval,
         now: Date
     ) async throws -> IssuedCertificateMaterial
@@ -171,6 +182,7 @@ public actor CertificateEnrollmentService {
         let material = try await issuer.issueCertificate(
             nodeID: enrollment.nodeID,
             nodePublicKey: enrollment.nodePublicKey,
+            certificateSigningRequestDER: enrollment.certificateSigningRequestDER,
             validity: enrollment.validity,
             now: now
         )
@@ -400,12 +412,18 @@ public actor CertificateEnrollmentValidator {
 
     private let authorityID: AuthorityID
     private let trustedAuthorityPublicKey: Data
+    private let networkID: NetworkID
     private let environment: String
     private var consumedChallengeIDs: Set<UUID> = []
 
-    public init(trustedAuthorityPublicKey: Data, environment: String) {
+    public init(
+        trustedAuthorityPublicKey: Data,
+        networkID: NetworkID,
+        environment: String
+    ) {
         self.trustedAuthorityPublicKey = trustedAuthorityPublicKey
         self.authorityID = CredentialVerifier.authorityID(for: trustedAuthorityPublicKey)
+        self.networkID = networkID
         self.environment = environment
     }
 
@@ -449,6 +467,7 @@ public actor CertificateEnrollmentValidator {
             try CredentialVerifier.verify(
                 request.credential,
                 trustedAuthorityPublicKey: trustedAuthorityPublicKey,
+                networkID: networkID,
                 environment: environment,
                 now: now,
                 allowedClockSkew: allowedClockSkew
@@ -461,6 +480,7 @@ public actor CertificateEnrollmentValidator {
         }
         guard request.nodeID == request.credential.claims.nodeID,
               request.nodePublicKey == request.credential.claims.nodePublicKey,
+              !request.certificateSigningRequestDER.isEmpty,
               NodeIdentity.nodeID(forPublicKeyRepresentation: request.nodePublicKey) == request.nodeID else {
             throw CertificateEnrollmentError.nodeIdentityMismatch
         }
@@ -481,6 +501,7 @@ public actor CertificateEnrollmentValidator {
             requestID: request.requestID,
             nodeID: request.nodeID,
             nodePublicKey: request.nodePublicKey,
+            certificateSigningRequestDER: request.certificateSigningRequestDER,
             validity: TimeInterval(request.requestedValiditySeconds)
         )
     }
@@ -495,6 +516,7 @@ private enum CertificateEnrollmentTranscript {
         append(request.requestID.uuidString.lowercased(), to: &data)
         append(request.nodeID.rawValue.uuidString.lowercased(), to: &data)
         append(request.nodePublicKey, to: &data)
+        append(request.certificateSigningRequestDER, to: &data)
         append(request.credential.claims.credentialID.uuidString.lowercased(), to: &data)
         append(request.environment, to: &data)
         append(UInt64(request.challenge.version), to: &data)

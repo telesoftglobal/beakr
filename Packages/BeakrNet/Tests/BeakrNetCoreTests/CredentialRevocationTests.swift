@@ -32,6 +32,7 @@ struct CredentialRevocationTests {
         let credential = try authority.issue(
             nodeID: identity.nodeID,
             nodePublicKey: identity.publicKeyRepresentation,
+            networkID: .test,
             environment: "development",
             validity: 3_600,
             now: now
@@ -41,6 +42,7 @@ struct CredentialRevocationTests {
             try CredentialVerifier.verify(
                 credential,
                 trustedAuthorityPublicKey: authority.publicKeyRepresentation,
+                networkID: .test,
                 environment: "development",
                 revokedCredentialIDs: [credential.claims.credentialID],
                 now: now

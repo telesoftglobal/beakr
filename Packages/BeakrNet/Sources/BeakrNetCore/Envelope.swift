@@ -1,12 +1,13 @@
 import Foundation
 
 public struct BeakrNetEnvelope: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
     public static let maximumControlPayloadBytes = 16 * 1_024
     public static let maximumControlQueueDuration: TimeInterval = 5 * 60
 
     public let schemaVersion: Int
     public let messageID: MessageID
+    public let networkID: NetworkID
     public let sessionID: SessionID
     public let sourceNodeID: NodeID
     public let destinationNodeID: NodeID
@@ -21,6 +22,7 @@ public struct BeakrNetEnvelope: Codable, Equatable, Sendable {
     public init(
         schemaVersion: Int = Self.currentSchemaVersion,
         messageID: MessageID = MessageID(),
+        networkID: NetworkID,
         sessionID: SessionID,
         sourceNodeID: NodeID,
         destinationNodeID: NodeID,
@@ -34,6 +36,7 @@ public struct BeakrNetEnvelope: Codable, Equatable, Sendable {
     ) {
         self.schemaVersion = schemaVersion
         self.messageID = messageID
+        self.networkID = networkID
         self.sessionID = sessionID
         self.sourceNodeID = sourceNodeID
         self.destinationNodeID = destinationNodeID
@@ -82,7 +85,7 @@ public struct BeakrNetEnvelope: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, messageID, sessionID, sourceNodeID, destinationNodeID
+        case schemaVersion, messageID, networkID, sessionID, sourceNodeID, destinationNodeID
         case sequenceNumber, channel, representation, deliveryPolicy
         case payloadType, payload, createdAt
     }
@@ -96,6 +99,7 @@ public struct BeakrNetEnvelope: Codable, Equatable, Sendable {
 
         self.schemaVersion = schemaVersion
         messageID = try container.decode(MessageID.self, forKey: .messageID)
+        networkID = try container.decode(NetworkID.self, forKey: .networkID)
         sessionID = try container.decode(SessionID.self, forKey: .sessionID)
         sourceNodeID = try container.decode(NodeID.self, forKey: .sourceNodeID)
         destinationNodeID = try container.decode(NodeID.self, forKey: .destinationNodeID)

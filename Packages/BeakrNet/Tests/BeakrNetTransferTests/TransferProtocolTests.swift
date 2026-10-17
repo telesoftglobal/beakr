@@ -12,7 +12,7 @@ struct TransferProtocolTests {
 
     @Test("Manifest encoding is canonical and envelope-bound")
     func manifestRoundTrip() throws {
-        let context = TransferContext(sessionID: session, sourceNodeID: source, destinationNodeID: destination)
+        let context = TransferContext(networkID: .test, sessionID: session, sourceNodeID: source, destinationNodeID: destination)
         let manifest = TransferManifest(transferID: transfer, context: context, byteCount: 4, chunkSize: 2,
                                         chunkCount: 2, contentDigest: Data(repeating: 1, count: 32),
                                         mediaType: "application/octet-stream", expiresAt: Date(timeIntervalSince1970: 2_000))
@@ -41,7 +41,7 @@ struct TransferProtocolTests {
 
     @Test("Manifest arithmetic and context substitution are rejected")
     func manifestValidation() throws {
-        let context = TransferContext(sessionID: session, sourceNodeID: source, destinationNodeID: destination)
+        let context = TransferContext(networkID: .test, sessionID: session, sourceNodeID: source, destinationNodeID: destination)
         let bad = TransferManifest(transferID: transfer, context: context, byteCount: 5, chunkSize: 2, chunkCount: 2,
                                    contentDigest: Data(repeating: 0, count: 32), mediaType: "x", expiresAt: Date.distantFuture)
         #expect(throws: TransferCodecError.invalidManifest) {

@@ -7,4 +7,7 @@
    <FileRef
       location = "group:Apps/Beakr.xcodeproj">
    </FileRef>
+   <FileRef
+      location = "group:Apps/BeakrNetIntegrationHost.xcodeproj">
+   </FileRef>
 </Workspace>

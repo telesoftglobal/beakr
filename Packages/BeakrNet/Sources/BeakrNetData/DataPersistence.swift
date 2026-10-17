@@ -11,12 +11,14 @@ public struct StoredDataResult: Codable, Equatable, Sendable {
     public let idempotencyKey: DataIdempotencyKey?
     public let response: DataMessage?
     public let completedAt: Date
+    public let applicationMetadata: Data?
 
-    public init(messageID: MessageID, idempotencyKey: DataIdempotencyKey?, response: DataMessage?, completedAt: Date) {
+    public init(messageID: MessageID, idempotencyKey: DataIdempotencyKey?, response: DataMessage?, completedAt: Date, applicationMetadata: Data? = nil) {
         self.messageID = messageID
         self.idempotencyKey = idempotencyKey
         self.response = response
         self.completedAt = completedAt
+        self.applicationMetadata = applicationMetadata
     }
 }
 
@@ -57,6 +59,22 @@ public actor PersistentDataState {
         return state
     }
 
+    /// Reads stored application results without opening or rewriting runtime state.
+    public static func readRecordedResults(
+        fileURL: URL,
+        maximumIncoming: Int = 8_192
+    ) throws -> [StoredDataResult] {
+        precondition(maximumIncoming > 0)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        let snapshot = try decoder.decode(Snapshot.self, from: Data(contentsOf: fileURL))
+        guard snapshot.formatVersion == Snapshot.currentFormatVersion else {
+            throw DataPersistenceError.unsupportedFormatVersion(snapshot.formatVersion)
+        }
+        return Array(snapshot.incoming.suffix(maximumIncoming))
+    }
+
     public func enqueue(_ envelope: BeakrNetEnvelope, now: Date = Date()) throws {
         guard envelope.channel == .data else { throw DataCodecError.wrongChannel }
         try envelope.validate(now: now)
@@ -82,6 +100,27 @@ public actor PersistentDataState {
 
     public func result(for messageID: MessageID) -> StoredDataResult? { incoming[messageID] }
     public func result(for key: DataIdempotencyKey) -> StoredDataResult? { idempotencyResults[key] }
+    public func recordedResults() -> [StoredDataResult] {
+        incomingOrder.compactMap { incoming[$0] }
+    }
+
+    public func clearRecordedResults() throws {
+        incoming.removeAll()
+        incomingOrder.removeAll()
+        idempotencyResults.removeAll()
+        try persist()
+    }
+
+    @discardableResult
+    public func removeRecordedResult(_ messageID: MessageID) throws -> Bool {
+        guard let removed = incoming.removeValue(forKey: messageID) else { return false }
+        incomingOrder.removeAll { $0 == messageID }
+        if let key = removed.idempotencyKey {
+            idempotencyResults.removeValue(forKey: key)
+        }
+        try persist()
+        return true
+    }
 
     public func record(_ result: StoredDataResult) throws {
         if let existing = incoming[result.messageID] {

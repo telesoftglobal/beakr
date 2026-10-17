@@ -33,7 +33,7 @@ struct BlackboardProtocolTests {
         let codec = BlackboardCodec()
         for message in messages {
             let envelope = try codec.makeEnvelope(
-                for: message, sessionID: SessionID(), sourceNodeID: NodeID(), destinationNodeID: NodeID(),
+                for: message, networkID: .test, sessionID: SessionID(), sourceNodeID: NodeID(), destinationNodeID: NodeID(),
                 sequenceNumber: 1, createdAt: Date(timeIntervalSince1970: 1_000),
                 deliveryPolicy: .init(durability: .durable)
             )
@@ -55,11 +55,11 @@ struct BlackboardProtocolTests {
         }
         let message = BlackboardWireMessage(kind: .snapshotRequest, spaceID: space)
         let good = try codec.makeEnvelope(
-            for: message, sessionID: SessionID(), sourceNodeID: NodeID(), destinationNodeID: NodeID(),
+            for: message, networkID: .test, sessionID: SessionID(), sourceNodeID: NodeID(), destinationNodeID: NodeID(),
             sequenceNumber: 1, createdAt: Date(timeIntervalSince1970: 1_000), deliveryPolicy: .init(durability: .durable)
         )
         let wrong = BeakrNetEnvelope(
-            messageID: good.messageID, sessionID: good.sessionID, sourceNodeID: good.sourceNodeID,
+            messageID: good.messageID, networkID: good.networkID, sessionID: good.sessionID, sourceNodeID: good.sourceNodeID,
             destinationNodeID: good.destinationNodeID, sequenceNumber: good.sequenceNumber,
             channel: .data, deliveryPolicy: good.deliveryPolicy, payloadType: good.payloadType,
             payload: good.payload, createdAt: good.createdAt

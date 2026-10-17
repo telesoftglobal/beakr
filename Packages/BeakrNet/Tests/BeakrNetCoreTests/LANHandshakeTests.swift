@@ -25,6 +25,7 @@ struct LANHandshakeTests {
         let acceptedAcceptor = try await fixture.authenticateAtInitiator(proof: acceptorProof)
         #expect(acceptedInitiator.peerNodeID == fixture.initiatorIdentity.nodeID)
         #expect(acceptedAcceptor.peerNodeID == fixture.acceptorIdentity.nodeID)
+        #expect(acceptedInitiator.networkID == .test)
         #expect(acceptedInitiator.negotiatedCapabilities.maximumEnvelopeBytes == 512_000)
 
         let first = try LANHandshakeWireCodec.encode(.hello(fixture.initiatorHello))
@@ -51,6 +52,19 @@ struct LANHandshakeTests {
             try await fixture.authenticateAtInitiator(
                 proof: proof,
                 expectedPeer: NodeIdentity().nodeID
+            )
+        }
+    }
+
+    @Test("Credentials from another network cannot authenticate")
+    func wrongNetwork() async throws {
+        let fixture = try Fixture()
+        let proof = try await fixture.acceptorProof()
+
+        await #expect(throws: LANHandshakeError.wrongNetwork) {
+            try await fixture.authenticateAtInitiator(
+                proof: proof,
+                expectedNetworkID: NetworkID()
             )
         }
     }
@@ -115,6 +129,7 @@ struct LANHandshakeTests {
         let expired = try fixture.authority.issue(
             nodeID: fixture.acceptorIdentity.nodeID,
             nodePublicKey: fixture.acceptorIdentity.publicKeyRepresentation,
+            networkID: .test,
             environment: fixture.environment,
             validity: 60,
             serviceScopes: ["lan"],
@@ -218,6 +233,7 @@ private struct Fixture {
         initiatorCredential = try authority.issue(
             nodeID: initiatorIdentity.nodeID,
             nodePublicKey: initiatorIdentity.publicKeyRepresentation,
+            networkID: .test,
             environment: environment,
             validity: 3_600,
             serviceScopes: ["lan"],
@@ -226,6 +242,7 @@ private struct Fixture {
         acceptorCredential = try authority.issue(
             nodeID: acceptorIdentity.nodeID,
             nodePublicKey: acceptorIdentity.publicKeyRepresentation,
+            networkID: .test,
             environment: environment,
             validity: 3_600,
             serviceScopes: acceptorScopes,
@@ -273,6 +290,7 @@ private struct Fixture {
     func authenticateAtInitiator(
         peerHello: LANHandshakeHello? = nil,
         proof: LANHandshakeProof,
+        expectedNetworkID: NetworkID = .test,
         expectedPeer: NodeID? = nil,
         allowedClockSkew: TimeInterval = 60
     ) async throws -> LANHandshakeAuthentication {
@@ -280,6 +298,7 @@ private struct Fixture {
             localHello: initiatorHello,
             peerHello: peerHello ?? acceptorHello,
             peerProof: proof,
+            expectedNetworkID: expectedNetworkID,
             expectedPeerNodeID: expectedPeer ?? acceptorIdentity.nodeID,
             expectedAdvertisementNonce: advertisementNonce,
             trustedAuthorityPublicKey: authority.publicKeyRepresentation,
@@ -299,6 +318,7 @@ private struct Fixture {
             localHello: acceptorHello,
             peerHello: initiatorHello,
             peerProof: proof,
+            expectedNetworkID: .test,
             expectedPeerNodeID: initiatorIdentity.nodeID,
             expectedAdvertisementNonce: advertisementNonce,
             trustedAuthorityPublicKey: authority.publicKeyRepresentation,

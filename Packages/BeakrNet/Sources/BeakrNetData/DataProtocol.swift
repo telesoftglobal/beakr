@@ -154,6 +154,7 @@ public struct DataCodec: Sendable {
 
     public func makeEnvelope(
         for message: DataMessage,
+        networkID: NetworkID,
         sessionID: SessionID,
         sourceNodeID: NodeID,
         destinationNodeID: NodeID,
@@ -164,6 +165,7 @@ public struct DataCodec: Sendable {
     ) throws -> BeakrNetEnvelope {
         BeakrNetEnvelope(
             messageID: messageID,
+            networkID: networkID,
             sessionID: sessionID,
             sourceNodeID: sourceNodeID,
             destinationNodeID: destinationNodeID,

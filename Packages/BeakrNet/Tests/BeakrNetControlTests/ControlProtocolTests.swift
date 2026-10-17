@@ -39,7 +39,7 @@ struct ControlProtocolTests {
             ControlHeader(type: .deliveryAcknowledgement, context: context()),
             ControlDeliveryAcknowledgement(acknowledgedMessageID: acknowledged)
         )
-        let expected = #"{"body":{"acknowledgedMessageID":{"rawValue":"00000000-0000-0000-0000-000000000004"}},"destinationNodeID":{"rawValue":"00000000-0000-0000-0000-000000000002"},"sessionID":{"rawValue":"00000000-0000-0000-0000-000000000003"},"sourceNodeID":{"rawValue":"00000000-0000-0000-0000-000000000001"},"type":"beakrnet.delivery-acknowledgement","version":1}"#
+        let expected = #"{"body":{"acknowledgedMessageID":{"rawValue":"00000000-0000-0000-0000-000000000004"}},"destinationNodeID":{"rawValue":"00000000-0000-0000-0000-000000000002"},"networkID":{"rawValue":"7E570000-0000-4000-8000-000000000001"},"sessionID":{"rawValue":"00000000-0000-0000-0000-000000000003"},"sourceNodeID":{"rawValue":"00000000-0000-0000-0000-000000000001"},"type":"beakrnet.delivery-acknowledgement","version":1}"#
 
         #expect(String(decoding: try ControlCodec().encode(message), as: UTF8.self) == expected)
     }
@@ -120,14 +120,14 @@ struct ControlProtocolTests {
 
     @Test("Typed acknowledgement completes Core pending delivery")
     func acknowledgementIntegration() async throws {
-        let coreSession = BeakrNetSession(id: session, localNodeID: source, remoteNodeID: destination, state: .active, now: now)
+        let coreSession = BeakrNetSession(id: session, networkID: .test, localNodeID: source, remoteNodeID: destination, state: .active, now: now)
         let pending = BeakrNetEnvelope(
-            messageID: acknowledged, sessionID: session, sourceNodeID: source, destinationNodeID: destination,
+            messageID: acknowledged, networkID: .test, sessionID: session, sourceNodeID: source, destinationNodeID: destination,
             sequenceNumber: 1, payloadType: "com.example.data", payload: Data(), createdAt: now
         )
         try await coreSession.queueForDelivery(pending, now: now)
         let typed = ControlMessage.deliveryAcknowledgement(
-            ControlHeader(type: .deliveryAcknowledgement, context: ControlContext(sourceNodeID: destination, destinationNodeID: source, sessionID: session)),
+            ControlHeader(type: .deliveryAcknowledgement, context: ControlContext(networkID: .test, sourceNodeID: destination, destinationNodeID: source, sessionID: session)),
             .init(acknowledgedMessageID: acknowledged)
         )
         #expect(await coreSession.acknowledge(try #require(typed.coreAcknowledgement)))
@@ -142,31 +142,31 @@ struct ControlProtocolTests {
         let (sender, receiver) = await InMemoryTransport.makePair()
         try await sender.send(outgoing)
         let incoming = try #require(await receiver.receive())
-        let receivingSession = BeakrNetSession(id: session, localNodeID: destination, remoteNodeID: source, state: .active, now: now)
+        let receivingSession = BeakrNetSession(id: session, networkID: .test, localNodeID: destination, remoteNodeID: source, state: .active, now: now)
         #expect(try await receivingSession.accept(incoming, now: now) == .accepted)
         #expect(try codec.decode(envelope: incoming) == message)
     }
 
     @Test("Mixed Control, Data, and Blackboard keep bounded relay fairness")
     func mixedFairness() async throws {
-        let queue = BoundedRelayQueue(policy: RelayQueuePolicy(
+        let queue = BoundedRelayQueue(networkID: .test, policy: RelayQueuePolicy(
             maximumMessagesPerNode: 8, maximumTotalMessages: 8,
             reservedControlMessagesPerNode: 2, reservedControlMessagesTotal: 2,
             maximumConsecutiveControlMessages: 2, messageTimeToLive: 60
         ))
         for index in 0..<4 {
             let control = try envelope(.sessionLiveness(ControlHeader(type: .sessionLiveness, context: context()), .init(kind: .probe, nonce: UInt64(index))), id: MessageID())
-            await queue.enqueue(control, for: destination, now: now)
+            try await queue.enqueue(control, for: destination, now: now)
         }
-        await queue.enqueue(applicationEnvelope(.data, sequence: 10), for: destination, now: now)
-        await queue.enqueue(applicationEnvelope(.blackboard, sequence: 11), for: destination, now: now)
+        try await queue.enqueue(applicationEnvelope(.data, sequence: 10), for: destination, now: now)
+        try await queue.enqueue(applicationEnvelope(.blackboard, sequence: 11), for: destination, now: now)
 
         let channels = await queue.drain(for: destination, now: now).map(\.channel)
         #expect(channels == [.control, .control, .data, .control, .control, .blackboard])
     }
 
     private func context() -> ControlContext {
-        ControlContext(sourceNodeID: source, destinationNodeID: destination, sessionID: session)
+        ControlContext(networkID: .test, sourceNodeID: source, destinationNodeID: destination, sessionID: session)
     }
 
     private func envelope(_ message: ControlMessage, id: MessageID? = nil) throws -> BeakrNetEnvelope {
@@ -174,20 +174,20 @@ struct ControlProtocolTests {
     }
 
     private func applicationEnvelope(_ channel: BeakrNetChannel, sequence: UInt64) -> BeakrNetEnvelope {
-        BeakrNetEnvelope(sessionID: session, sourceNodeID: source, destinationNodeID: destination, sequenceNumber: sequence,
+        BeakrNetEnvelope(networkID: .test, sessionID: session, sourceNodeID: source, destinationNodeID: destination, sequenceNumber: sequence,
                          channel: channel, deliveryPolicy: .init(durability: .queued, expiresAt: now.addingTimeInterval(30)),
                          payloadType: "com.example.payload", payload: Data(), createdAt: now)
     }
 
     private func replace(_ envelope: BeakrNetEnvelope, payloadType: String? = nil, payload: Data? = nil) -> BeakrNetEnvelope {
-        BeakrNetEnvelope(messageID: envelope.messageID, sessionID: envelope.sessionID, sourceNodeID: envelope.sourceNodeID,
+        BeakrNetEnvelope(messageID: envelope.messageID, networkID: envelope.networkID, sessionID: envelope.sessionID, sourceNodeID: envelope.sourceNodeID,
                          destinationNodeID: envelope.destinationNodeID, sequenceNumber: envelope.sequenceNumber,
                          channel: envelope.channel, representation: envelope.representation, deliveryPolicy: envelope.deliveryPolicy,
                          payloadType: payloadType ?? envelope.payloadType, payload: payload ?? envelope.payload, createdAt: envelope.createdAt)
     }
 
     private func replaceContext(_ envelope: BeakrNetEnvelope, source: NodeID) -> BeakrNetEnvelope {
-        BeakrNetEnvelope(messageID: envelope.messageID, sessionID: envelope.sessionID, sourceNodeID: source,
+        BeakrNetEnvelope(messageID: envelope.messageID, networkID: envelope.networkID, sessionID: envelope.sessionID, sourceNodeID: source,
                          destinationNodeID: envelope.destinationNodeID, sequenceNumber: envelope.sequenceNumber,
                          channel: envelope.channel, representation: envelope.representation, deliveryPolicy: envelope.deliveryPolicy,
                          payloadType: envelope.payloadType, payload: envelope.payload, createdAt: envelope.createdAt)

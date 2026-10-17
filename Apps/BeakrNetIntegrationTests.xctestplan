@@ -1,0 +1,29 @@
+{
+  "configurations" : [
+    {
+      "id" : "CEA2BA61-8B65-4A35-81D7-F13FD2A9E8EA",
+      "name" : "Configuration 1",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "environmentVariableEntries" : [
+      {
+        "key" : "BEAKRNET_RUN_SIGNED_MTLS_INTEGRATION",
+        "value" : "1"
+      }
+    ]
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:BeakrNetIntegrationHost.xcodeproj",
+        "identifier" : "364ECA53307108FC00E3FB7A",
+        "name" : "BeakrNetIntegrationTests"
+      }
+    }
+  ],
+  "version" : 1
+}

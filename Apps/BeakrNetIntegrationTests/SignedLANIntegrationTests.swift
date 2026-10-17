@@ -11,7 +11,7 @@ import BeakrNetSecurity
     .enabled(if: ProcessInfo.processInfo.environment["BEAKRNET_RUN_SIGNED_MTLS_INTEGRATION"] == "1"),
     .serialized
 )
-struct BeakrNetDemoIntegrationTests {
+struct SignedLANIntegrationTests {
     @Test("Two provisioned node identities establish mutual TLS 1.3")
     func mutualTLSLoopback() async throws {
         let fixtures = try TLSFixtures.load()
@@ -164,6 +164,7 @@ struct BeakrNetDemoIntegrationTests {
         let credential = try authority.issue(
             nodeID: nodeIdentity.nodeID,
             nodePublicKey: nodeIdentity.publicKeyRepresentation,
+            networkID: NetworkID(),
             environment: "integration",
             validity: 86_400,
             serviceScopes: ["lan"],

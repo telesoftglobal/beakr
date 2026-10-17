@@ -6,6 +6,7 @@ public struct LANTransportConfiguration: Sendable {
     public let identity: NodeIdentity
     public let credential: NodeCredential
     public let trustedAuthorityPublicKey: Data
+    public let networkID: NetworkID
     public let environment: String
     public let revocationSnapshot: CredentialRevocationSnapshot
     public let localCertificateDER: Data
@@ -17,6 +18,7 @@ public struct LANTransportConfiguration: Sendable {
         identity: NodeIdentity,
         credential: NodeCredential,
         trustedAuthorityPublicKey: Data,
+        networkID: NetworkID,
         environment: String,
         revocationSnapshot: CredentialRevocationSnapshot,
         localCertificateDER: Data,
@@ -27,6 +29,7 @@ public struct LANTransportConfiguration: Sendable {
         self.identity = identity
         self.credential = credential
         self.trustedAuthorityPublicKey = trustedAuthorityPublicKey
+        self.networkID = networkID
         self.environment = environment
         self.revocationSnapshot = revocationSnapshot
         self.localCertificateDER = localCertificateDER
@@ -101,6 +104,9 @@ public actor LANTransport: BeakrNetTransport, RevocationSnapshotConsumer {
             guard configuration.identity.nodeID == configuration.credential.claims.nodeID else {
                 throw LANTransportError.localIdentityMismatch
             }
+            guard configuration.credential.claims.networkID == configuration.networkID else {
+                throw LANHandshakeError.wrongNetwork
+            }
             let peerCertificate = try connection.peerCertificate()
             let localHello = LANHandshakeHello(
                 role: role,
@@ -132,6 +138,7 @@ public actor LANTransport: BeakrNetTransport, RevocationSnapshotConsumer {
                 localHello: localHello,
                 peerHello: peerHello,
                 peerProof: peerProof,
+                expectedNetworkID: configuration.networkID,
                 expectedPeerNodeID: expectedPeerNodeID,
                 expectedAdvertisementNonce: advertisementNonce,
                 trustedAuthorityPublicKey: configuration.trustedAuthorityPublicKey,

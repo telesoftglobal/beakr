@@ -10,6 +10,7 @@ public enum LANTLSRole: Sendable {
 public enum LANTLSConfigurationError: Error, Equatable, Sendable {
     case identityConversionFailed
     case invalidPKCS12
+    case pkcs12ImportFailed(status: Int32)
     case identityMissing
     case certificateMissing
 }
@@ -89,7 +90,11 @@ public enum LANTLSIdentityLoader {
             [kSecImportExportPassphrase as String: password] as CFDictionary,
             &imported
         )
-        guard status == errSecSuccess, let items = imported as? [[String: Any]] else {
+        guard status == errSecSuccess else {
+            if status == errSecDecode { throw LANTLSConfigurationError.invalidPKCS12 }
+            throw LANTLSConfigurationError.pkcs12ImportFailed(status: status)
+        }
+        guard let items = imported as? [[String: Any]] else {
             throw LANTLSConfigurationError.invalidPKCS12
         }
         guard let value = items.first?[kSecImportItemIdentity as String],

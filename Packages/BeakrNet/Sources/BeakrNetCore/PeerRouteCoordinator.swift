@@ -50,6 +50,7 @@ public enum RouteCoordinatorDiagnosticEvent: Equatable, Sendable {
 public actor PeerRouteCoordinator {
     public typealias EventSink = @Sendable (RouteCoordinatorDiagnosticEvent) -> Void
 
+    public let networkID: NetworkID
     public let remoteNodeID: NodeID
 
     private let selector: RouteSelector
@@ -61,10 +62,12 @@ public actor PeerRouteCoordinator {
     public private(set) var diagnosticHistory: [RouteCoordinatorDiagnosticEvent]
 
     public init(
+        networkID: NetworkID,
         remoteNodeID: NodeID,
         selector: RouteSelector = RouteSelector(),
         eventSink: @escaping EventSink = { _ in }
     ) {
+        self.networkID = networkID
         self.remoteNodeID = remoteNodeID
         self.selector = selector
         self.eventSink = eventSink
@@ -145,7 +148,8 @@ public actor PeerRouteCoordinator {
 
     /// Returns an immutable route snapshot. Selection never sends, retries, or mutates an envelope.
     public func route(for envelope: BeakrNetEnvelope, envelopeSizeBytes: Int) -> RouteSnapshot? {
-        guard envelope.destinationNodeID == remoteNodeID else {
+        guard envelope.networkID == networkID,
+              envelope.destinationNodeID == remoteNodeID else {
             emit(.fallbackUnavailable(remoteNodeID: remoteNodeID))
             selectedSnapshot = nil
             return nil

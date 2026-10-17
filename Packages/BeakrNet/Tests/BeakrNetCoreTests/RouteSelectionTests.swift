@@ -73,6 +73,7 @@ struct RouteSelectionTests {
         representation: RepresentationProfile = .full
     ) -> BeakrNetEnvelope {
         BeakrNetEnvelope(
+            networkID: .test,
             sessionID: SessionID(),
             sourceNodeID: NodeID(),
             destinationNodeID: NodeID(),

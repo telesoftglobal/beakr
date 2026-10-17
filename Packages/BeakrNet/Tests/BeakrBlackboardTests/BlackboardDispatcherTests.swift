@@ -16,7 +16,7 @@ struct BlackboardDispatcherTests {
         let codec = BlackboardCodec()
         let request = BlackboardWireMessage(kind: .snapshotRequest, spaceID: space)
         let envelope = try codec.makeEnvelope(
-            for: request, sessionID: SessionID(), sourceNodeID: outsider, destinationNodeID: owner,
+            for: request, networkID: .test, sessionID: SessionID(), sourceNodeID: outsider, destinationNodeID: owner,
             sequenceNumber: 1, createdAt: Date(timeIntervalSince1970: 1_000),
             deliveryPolicy: .init(durability: .durable)
         )
@@ -35,7 +35,7 @@ struct BlackboardDispatcherTests {
         let dispatcher = BlackboardDispatcher(repository: repository)
         let request = BlackboardWireMessage(kind: .snapshotRequest, spaceID: space)
         let envelope = try BlackboardCodec().makeEnvelope(
-            for: request, sessionID: SessionID(), sourceNodeID: owner, destinationNodeID: NodeID(),
+            for: request, networkID: .test, sessionID: SessionID(), sourceNodeID: owner, destinationNodeID: NodeID(),
             sequenceNumber: 1, createdAt: Date(timeIntervalSince1970: 1_000),
             deliveryPolicy: .init(durability: .durable)
         )

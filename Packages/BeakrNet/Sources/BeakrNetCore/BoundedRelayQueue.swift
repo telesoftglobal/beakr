@@ -1,5 +1,9 @@
 import Foundation
 
+public enum RelayQueueError: Error, Equatable, Sendable {
+    case wrongNetwork(expected: NetworkID, actual: NetworkID)
+}
+
 public struct RelayQueuePolicy: Equatable, Sendable {
     public let maximumMessagesPerNode: Int
     public let maximumTotalMessages: Int
@@ -81,12 +85,14 @@ public actor BoundedRelayQueue {
     }
 
     public let policy: RelayQueuePolicy
+    public let networkID: NetworkID
     private var entries: [NodeID: DestinationQueue] = [:]
     private var admittedMessages: UInt64 = 0
     private var evictedMessages: UInt64 = 0
     private var expiredMessages: UInt64 = 0
 
-    public init(policy: RelayQueuePolicy) {
+    public init(networkID: NetworkID, policy: RelayQueuePolicy) {
+        self.networkID = networkID
         self.policy = policy
     }
 
@@ -95,7 +101,10 @@ public actor BoundedRelayQueue {
         _ envelope: BeakrNetEnvelope,
         for destination: NodeID,
         now: Date = Date()
-    ) -> RelayQueueAdmission {
+    ) throws -> RelayQueueAdmission {
+        guard envelope.networkID == networkID else {
+            throw RelayQueueError.wrongNetwork(expected: networkID, actual: envelope.networkID)
+        }
         purgeExpired(now: now)
         var evictions: [RelayQueueEviction] = []
 

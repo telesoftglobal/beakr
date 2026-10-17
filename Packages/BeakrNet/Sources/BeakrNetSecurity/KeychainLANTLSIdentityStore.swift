@@ -24,6 +24,10 @@ public struct KeychainLANTLSIdentityStore: Sendable {
         self.service = service
     }
 
+    public init(namespace: ProfileKeychainNamespace) {
+        service = namespace.service
+    }
+
     public func install(
         leafCertificateDER: Data,
         certificateChainDER: [Data],
@@ -32,7 +36,7 @@ public struct KeychainLANTLSIdentityStore: Sendable {
         let leaf = try certificate(from: leafCertificateDER)
         try validate(leaf: leaf, nodeIdentity: nodeIdentity)
         let chain = try certificateChainDER.map(certificate(from:))
-        try ensurePrivateKey(nodeIdentity)
+        let privateKey = try ensurePrivateKey(nodeIdentity)
 
         let previousMaterial = try activeMaterial()
         try addCertificate(leaf, label: leafLabel)
@@ -40,7 +44,11 @@ public struct KeychainLANTLSIdentityStore: Sendable {
             try addCertificate(certificate, label: "\(service).lan-tls.chain.\(index)")
         }
 
-        let stored = try identity(matching: leafCertificateDER, chain: chain)
+        let stored = try identity(
+            matching: leafCertificateDER,
+            chain: chain,
+            privateKey: privateKey
+        )
         do {
             try setActiveMaterial(ActiveMaterial(
                 leafCertificateDER: leafCertificateDER,
@@ -129,7 +137,7 @@ public struct KeychainLANTLSIdentityStore: Sendable {
         }
     }
 
-    private func ensurePrivateKey(_ nodeIdentity: NodeIdentity) throws {
+    private func ensurePrivateKey(_ nodeIdentity: NodeIdentity) throws -> SecKey {
         let representation = nodeIdentity.publicKeyRepresentation + nodeIdentity.privateKeyRepresentation
         var result: CFTypeRef?
         var query = privateKeyQuery
@@ -144,7 +152,7 @@ public struct KeychainLANTLSIdentityStore: Sendable {
             guard SecKeyCopyExternalRepresentation(secKey, &error) as Data? == representation else {
                 throw KeychainLANTLSIdentityStoreError.privateKeyMismatch
             }
-            return
+            return secKey
         }
         guard existingStatus == errSecItemNotFound else {
             throw KeychainLANTLSIdentityStoreError.unexpectedStatus(existingStatus)
@@ -170,6 +178,7 @@ public struct KeychainLANTLSIdentityStore: Sendable {
         guard status == errSecSuccess else {
             throw KeychainLANTLSIdentityStoreError.unexpectedStatus(status)
         }
+        return key
     }
 
     private func addCertificate(_ certificate: SecCertificate, label: String) throws {
@@ -185,41 +194,57 @@ public struct KeychainLANTLSIdentityStore: Sendable {
         }
     }
 
-    private func identity(matching leafDER: Data, chain: [SecCertificate]) throws -> StoredLANTLSIdentity {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassIdentity,
-            kSecMatchLimit as String: kSecMatchLimitAll,
-            kSecReturnRef as String: true
-        ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess else {
-            throw KeychainLANTLSIdentityStoreError.unexpectedStatus(status)
-        }
-        let identities: [SecIdentity]
-        if let values = result as? [Any] {
-            identities = values.compactMap { value in
-                guard CFGetTypeID(value as CFTypeRef) == SecIdentityGetTypeID() else { return nil }
-                return unsafeDowncast(value as AnyObject, to: SecIdentity.self)
+    private func identity(
+        matching leafDER: Data,
+        chain: [SecCertificate],
+        privateKey suppliedPrivateKey: SecKey? = nil
+    ) throws -> StoredLANTLSIdentity {
+        let leaf = try certificate(from: leafDER)
+#if os(macOS)
+        var matchedIdentity: SecIdentity?
+        let matchStatus = SecIdentityCreateWithCertificate(nil, leaf, &matchedIdentity)
+        guard matchStatus == errSecSuccess, let matchedIdentity else {
+            if matchStatus == errSecItemNotFound {
+                throw KeychainLANTLSIdentityStoreError.identityUnavailable
             }
-        } else if let result, CFGetTypeID(result) == SecIdentityGetTypeID() {
-            identities = [unsafeDowncast(result as AnyObject, to: SecIdentity.self)]
+            throw KeychainLANTLSIdentityStoreError.unexpectedStatus(matchStatus)
+        }
+        return StoredLANTLSIdentity(
+            identity: matchedIdentity,
+            leafCertificate: leaf,
+            certificateChain: chain
+        )
+#else
+        let privateKey: SecKey
+        if let suppliedPrivateKey {
+            privateKey = suppliedPrivateKey
         } else {
-            throw KeychainLANTLSIdentityStoreError.invalidStoredValue
+            var query = privateKeyQuery
+            query[kSecReturnRef as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            guard status == errSecSuccess else {
+                if status == errSecItemNotFound {
+                    throw KeychainLANTLSIdentityStoreError.identityUnavailable
+                }
+                throw KeychainLANTLSIdentityStoreError.unexpectedStatus(status)
+            }
+            guard let result, CFGetTypeID(result) == SecKeyGetTypeID() else {
+                throw KeychainLANTLSIdentityStoreError.invalidStoredValue
+            }
+            privateKey = unsafeDowncast(result as AnyObject, to: SecKey.self)
         }
 
-        for identity in identities {
-            var leaf: SecCertificate?
-            guard SecIdentityCopyCertificate(identity, &leaf) == errSecSuccess, let leaf else { continue }
-            if SecCertificateCopyData(leaf) as Data == leafDER {
-                return StoredLANTLSIdentity(
-                    identity: identity,
-                    leafCertificate: leaf,
-                    certificateChain: chain
-                )
-            }
+        guard let identity = SecIdentityCreate(nil, leaf, privateKey) else {
+            throw KeychainLANTLSIdentityStoreError.identityUnavailable
         }
-        throw KeychainLANTLSIdentityStoreError.identityUnavailable
+        return StoredLANTLSIdentity(
+            identity: identity,
+            leafCertificate: leaf,
+            certificateChain: chain
+        )
+#endif
     }
 
     private func activeMaterial() throws -> ActiveMaterial? {
@@ -279,7 +304,7 @@ public struct KeychainLANTLSIdentityStore: Sendable {
     }
 }
 
-public enum KeychainLANTLSIdentityStoreError: Error, Equatable, Sendable {
+public enum KeychainLANTLSIdentityStoreError: Error, Equatable, Sendable, LocalizedError {
     case invalidCertificate
     case certificateKeyUnavailable
     case certificateKeyMismatch
@@ -288,4 +313,25 @@ public enum KeychainLANTLSIdentityStoreError: Error, Equatable, Sendable {
     case identityUnavailable
     case invalidStoredValue
     case unexpectedStatus(OSStatus)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidCertificate:
+            "The issued certificate is not valid DER certificate data."
+        case .certificateKeyUnavailable:
+            "The issued certificate does not contain a usable public key."
+        case .certificateKeyMismatch:
+            "The issued certificate belongs to a different node key."
+        case .invalidPrivateKey:
+            "The node private key could not be imported into Keychain."
+        case .privateKeyMismatch:
+            "A different node private key already exists in Keychain."
+        case .identityUnavailable:
+            "Keychain could not associate the issued certificate with the node private key."
+        case .invalidStoredValue:
+            "Keychain returned an invalid stored identity value."
+        case let .unexpectedStatus(status):
+            "Keychain operation failed (OSStatus \(status)): \(SecCopyErrorMessageString(status, nil) as String? ?? "Unknown Security error")."
+        }
+    }
 }

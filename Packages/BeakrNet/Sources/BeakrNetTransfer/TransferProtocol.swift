@@ -8,12 +8,13 @@ public struct TransferID: RawRepresentable, Codable, Hashable, Sendable {
 }
 
 public struct TransferContext: Codable, Equatable, Sendable {
+    public let networkID: NetworkID
     public let sessionID: SessionID
     public let sourceNodeID: NodeID
     public let destinationNodeID: NodeID
 
-    public init(sessionID: SessionID, sourceNodeID: NodeID, destinationNodeID: NodeID) {
-        self.sessionID = sessionID; self.sourceNodeID = sourceNodeID; self.destinationNodeID = destinationNodeID
+    public init(networkID: NetworkID, sessionID: SessionID, sourceNodeID: NodeID, destinationNodeID: NodeID) {
+        self.networkID = networkID; self.sessionID = sessionID; self.sourceNodeID = sourceNodeID; self.destinationNodeID = destinationNodeID
     }
 }
 
@@ -132,7 +133,7 @@ public struct TransferCodec: Sendable {
         do { message = try decoder.decode(TransferWireMessage.self, from: envelope.payload) } catch { throw TransferCodecError.malformed }
         try validate(message)
         if let context = message.manifest?.context {
-            guard context == TransferContext(sessionID: envelope.sessionID, sourceNodeID: envelope.sourceNodeID,
+            guard context == TransferContext(networkID: envelope.networkID, sessionID: envelope.sessionID, sourceNodeID: envelope.sourceNodeID,
                                              destinationNodeID: envelope.destinationNodeID) else { throw TransferCodecError.contextMismatch }
         }
         guard try encode(message) == envelope.payload else { throw TransferCodecError.noncanonical }
@@ -141,7 +142,7 @@ public struct TransferCodec: Sendable {
 
     public func makeEnvelope(for message: TransferWireMessage, context: TransferContext, sequenceNumber: UInt64,
                              createdAt: Date, deliveryPolicy: DeliveryPolicy, messageID: MessageID = MessageID()) throws -> BeakrNetEnvelope {
-        BeakrNetEnvelope(messageID: messageID, sessionID: context.sessionID, sourceNodeID: context.sourceNodeID,
+        BeakrNetEnvelope(messageID: messageID, networkID: context.networkID, sessionID: context.sessionID, sourceNodeID: context.sourceNodeID,
                          destinationNodeID: context.destinationNodeID, sequenceNumber: sequenceNumber, channel: .data,
                          deliveryPolicy: deliveryPolicy, payloadType: TransferWireMessage.payloadType,
                          payload: try encode(message), createdAt: createdAt)

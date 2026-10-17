@@ -116,6 +116,7 @@ struct BeakrNetNodeCLI {
                 }
                 try await send(
                     count: count,
+                    networkID: credential.claims.networkID,
                     from: nodeID,
                     to: NodeID(rawValue: peerUUID),
                     over: transport
@@ -130,6 +131,7 @@ struct BeakrNetNodeCLI {
 
     private static func send(
         count: Int,
+        networkID: NetworkID,
         from source: NodeID,
         to destination: NodeID,
         over transport: RelayTransport
@@ -137,6 +139,7 @@ struct BeakrNetNodeCLI {
         let sessionID = SessionID()
         for sequenceNumber in 1...count {
             let envelope = BeakrNetEnvelope(
+                networkID: networkID,
                 sessionID: sessionID,
                 sourceNodeID: source,
                 destinationNodeID: destination,

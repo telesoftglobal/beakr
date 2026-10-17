@@ -61,3 +61,96 @@ public actor HostDiagnosticJournal {
         }
     }
 }
+
+public enum PersistentHostDiagnosticError: Error, Equatable, Sendable {
+    case unsupportedFormat(Int)
+    case eventLimitExceeded
+    case noncanonicalSnapshot
+}
+
+/// A restart-safe, bounded diagnostic journal containing structured fields only.
+public actor PersistentHostDiagnosticJournal {
+    private struct Snapshot: Codable, Equatable {
+        static let currentVersion = 1
+        let version: Int
+        let events: [HostDiagnosticEvent]
+    }
+
+    public let fileURL: URL
+    public let policy: HostDiagnosticPolicy
+    private var events: [HostDiagnosticEvent]
+
+    private init(fileURL: URL, policy: HostDiagnosticPolicy, events: [HostDiagnosticEvent]) {
+        self.fileURL = fileURL
+        self.policy = policy
+        self.events = events
+    }
+
+    public static func open(
+        fileURL: URL,
+        policy: HostDiagnosticPolicy = HostDiagnosticPolicy()
+    ) throws -> PersistentHostDiagnosticJournal {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return PersistentHostDiagnosticJournal(fileURL: fileURL, policy: policy, events: [])
+        }
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        let snapshot = try decoder.decode(Snapshot.self, from: data)
+        guard snapshot.version == Snapshot.currentVersion else {
+            throw PersistentHostDiagnosticError.unsupportedFormat(snapshot.version)
+        }
+        guard snapshot.events.count <= policy.maximumEvents else {
+            throw PersistentHostDiagnosticError.eventLimitExceeded
+        }
+        guard try encode(snapshot) == data else {
+            throw PersistentHostDiagnosticError.noncanonicalSnapshot
+        }
+        return PersistentHostDiagnosticJournal(
+            fileURL: fileURL,
+            policy: policy,
+            events: snapshot.events
+        )
+    }
+
+    public func record(_ event: HostDiagnosticEvent) throws {
+        let previous = events
+        events.append(event)
+        if events.count > policy.maximumEvents {
+            events.removeFirst(events.count - policy.maximumEvents)
+        }
+        do { try persist() }
+        catch { events = previous; throw error }
+    }
+
+    public func snapshot() -> [HostDiagnosticEvent] { events }
+
+    public func export() throws -> Data {
+        var selected = events
+        while true {
+            let data = try Self.encode(Snapshot(version: Snapshot.currentVersion, events: selected))
+            if data.count <= policy.maximumExportBytes { return data }
+            guard !selected.isEmpty else { throw CocoaError(.fileWriteOutOfSpace) }
+            selected.removeFirst()
+        }
+    }
+
+    private func persist() throws {
+        let data = try Self.encode(Snapshot(version: Snapshot.currentVersion, events: events))
+        guard data.count <= policy.maximumExportBytes else {
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: fileURL, options: .atomic)
+    }
+
+    private static func encode(_ snapshot: Snapshot) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        return try encoder.encode(snapshot)
+    }
+}

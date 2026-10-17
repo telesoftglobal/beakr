@@ -3,6 +3,24 @@ import Testing
 import BeakrNetCore
 import BeakrNetTestSupport
 
+@Suite("Bonjour discovery metadata")
+struct BonjourDiscoveryMetadataTests {
+    @Test("Friendly names round trip and remain optional")
+    func friendlyNameRoundTrip() throws {
+        let named = BonjourDiscoveryMetadata(
+            nodeIDHint: NodeID(rawValue: UUID()),
+            advertisementNonce: Data(repeating: 7, count: 32),
+            displayName: "Alice’s iPhone"
+        )
+
+        #expect(try BonjourMetadataParser.parse(named.txtRecord).displayName == "Alice’s iPhone")
+
+        var unnamedRecord = named.txtRecord
+        unnamedRecord.removeValue(forKey: "name")
+        #expect(try BonjourMetadataParser.parse(unnamedRecord).displayName == nil)
+    }
+}
+
 @Suite("Injected Bonjour discovery")
 struct BonjourDiscoveryTests {
     @Test("Discovery additions, metadata changes, and removals are distinct")
@@ -123,6 +141,33 @@ struct BonjourDiscoveryTests {
 
         #expect(factory.requestedEndpoints.isEmpty)
         #expect(diagnostics.events.contains(.staleCallbackIgnored(component: "browser", generation: 1)))
+    }
+
+    @Test("A failed connection retries while the peer remains discovered")
+    func reconnectsWithoutDiscoveryChange() async throws {
+        let endpoint = BonjourEndpointID(rawValue: uuid(7))
+        let browser = ScriptedBonjourBrowser()
+        let firstConnection = ScriptedBonjourConnection()
+        let secondConnection = ScriptedBonjourConnection()
+        let factory = ScriptedBonjourConnectionFactory(results: [
+            .success(firstConnection),
+            .success(secondConnection)
+        ])
+        let coordinator = BonjourDiscoveryCoordinator(
+            localNodeID: node(1),
+            browser: browser,
+            connectionFactory: factory,
+            reconnectDelay: .milliseconds(1)
+        )
+        await coordinator.start()
+
+        browser.send(.added(advertisement(endpoint: endpoint, peer: node(2), nonceByte: 1)))
+        await settle()
+        firstConnection.send(.failed(reason: "peer unavailable"))
+        try await Task.sleep(for: .milliseconds(20))
+        await settle()
+
+        #expect(factory.requestedEndpoints == [endpoint, endpoint])
     }
 
     @Test("Permission denial and browser failure have structured diagnostics")

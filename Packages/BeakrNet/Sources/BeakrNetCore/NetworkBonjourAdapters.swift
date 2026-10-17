@@ -313,7 +313,19 @@ public final class NetworkBonjourListener: BonjourListening, @unchecked Sendable
             }
         }
         listener.newConnectionHandler = { connection in
-            eventHandler(.connection(NetworkBonjourConnection(connection: connection)))
+            let wrappedConnection = NetworkBonjourConnection(connection: connection)
+            wrappedConnection.start { state in
+                switch state {
+                case .ready:
+                    wrappedConnection.connection.stateUpdateHandler = nil
+                    eventHandler(.connection(wrappedConnection))
+                case .failed, .cancelled:
+                    wrappedConnection.connection.stateUpdateHandler = nil
+                    wrappedConnection.cancel()
+                case .setup, .preparing, .waiting:
+                    break
+                }
+            }
         }
         listener.start(queue: queue)
     }

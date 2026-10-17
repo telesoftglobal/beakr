@@ -7,20 +7,23 @@ struct BeakrNetHandoffLab {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let nodeA = NodeID()
         let nodeB = NodeID()
+        let networkID = NetworkID()
         let sessionID = SessionID()
         let senderSession = BeakrNetSession(
             id: sessionID,
+            networkID: networkID,
             localNodeID: nodeA,
             remoteNodeID: nodeB,
             state: .active
         )
         let receiverSession = BeakrNetSession(
             id: sessionID,
+            networkID: networkID,
             localNodeID: nodeB,
             remoteNodeID: nodeA,
             state: .active
         )
-        let coordinator = PeerRouteCoordinator(remoteNodeID: nodeB)
+        let coordinator = PeerRouteCoordinator(networkID: networkID, remoteNodeID: nodeB)
         let driver = SessionDeliveryDriver(
             session: senderSession,
             coordinator: coordinator,
@@ -40,6 +43,7 @@ struct BeakrNetHandoffLab {
             requiresAuthentication: false
         )
         let persistence = try await RelayPersistenceProbe.make(
+            networkID: networkID,
             destination: nodeB,
             sessionID: sessionID,
             source: nodeA,
@@ -47,6 +51,7 @@ struct BeakrNetHandoffLab {
         )
 
         let relayEnvelope = makeEnvelope(
+            networkID: networkID,
             sessionID: sessionID,
             source: nodeA,
             destination: nodeB,
@@ -76,6 +81,7 @@ struct BeakrNetHandoffLab {
 
         let expiresAt = now.addingTimeInterval(120)
         let handoffEnvelope = makeEnvelope(
+            networkID: networkID,
             sessionID: sessionID,
             source: nodeA,
             destination: nodeB,
@@ -169,6 +175,7 @@ struct BeakrNetHandoffLab {
     }
 
     private static func makeEnvelope(
+        networkID: NetworkID,
         sessionID: SessionID,
         source: NodeID,
         destination: NodeID,
@@ -177,6 +184,7 @@ struct BeakrNetHandoffLab {
         expiresAt: Date? = nil
     ) -> BeakrNetEnvelope {
         BeakrNetEnvelope(
+            networkID: networkID,
             sessionID: sessionID,
             sourceNodeID: source,
             destinationNodeID: destination,
@@ -226,6 +234,7 @@ private actor LabTransport: BeakrNetTransport {
         let acceptance = try await receiverSession.accept(envelope)
         deliveries.append(LabDelivery(envelope: envelope, acceptance: acceptance))
         latestAcknowledgement = DeliveryAcknowledgement(
+            networkID: envelope.networkID,
             sessionID: envelope.sessionID,
             messageID: envelope.messageID
         )
@@ -246,6 +255,7 @@ private struct RelayPersistenceProbe {
     let originalBytes: Data
 
     static func make(
+        networkID: NetworkID,
         destination: NodeID,
         sessionID: SessionID,
         source: NodeID,
@@ -255,11 +265,13 @@ private struct RelayPersistenceProbe {
             .appendingPathComponent("BeakrNetHandoffLab-\(UUID().uuidString)", isDirectory: true)
         let fileURL = directory.appendingPathComponent("relay-queue.json")
         let queue = try await PersistentRelayQueue.open(
+            networkID: networkID,
             policy: .development,
             fileURL: fileURL,
             now: now
         )
         let sentinel = BeakrNetEnvelope(
+            networkID: networkID,
             sessionID: sessionID,
             sourceNodeID: source,
             destinationNodeID: destination,
