@@ -87,3 +87,21 @@ These are disposable integration credentials, not development or production enro
 ## Verified destinations
 
 On October 3, 2026, the enabled signed-host suite completed successfully on macOS, iOS Simulator, and a physical iPhone. The physical-device run verified code signing, installation, Security and Network framework behavior, and Local Network authorization with the real iOS sandbox. Together the runs covered successful mutual TLS 1.3 and encrypted transfer plus rejection of an unrelated authority, an expired leaf, and a client without an identity.
+
+
+## Isolated authority TLS impairment (November 1)
+
+The opt-in authority HTTPS test additionally runs a TCP pass-through proxy on `127.0.0.1` with an OS-assigned port. It requires Python 3 (`/usr/bin/python3`, or `BEAKRNET_TEST_PYTHON`). The proxy holds the first client bytes for 250 ms in the delay scenario, and closes a separate connection on its first server TLS bytes in the interruption scenario. TLS terminates only at the real authority; certificate verification remains enabled in curl. Subsequent explicit client requests must retrieve the original valid signed membership and revocation snapshots. Connection/cut counts and monotonic delay measurements are asserted/reported. All credentials, ledgers, processes and proxy mode/event files belong to the disposable fixture.
+
+Use Xcode BuildProject on `BeakrNetAuthorityServer / My Mac` to produce the server executable for this acceptance workflow. Set `BEAKRNET_AUTHORITY_SERVER_EXECUTABLE` to that build's product path, enable `BEAKRNET_RUN_AUTHORITY_HTTPS_INTEGRATION=1`, and run only `AuthorityHTTPSServerIntegrationTests` via the package test runner. This is a macOS package integration test, not a Beakr app test. It may require a host context with working Security services; the November 1 sandbox run failed during TLS identity setup and the approved host-context run passed.
+
+This covers control-plane TLS establishment failure followed by an explicit retry, not raw packet loss, automatic product retry, post-acceptance message interruption, or UI acceptance. No global network impairment settings are changed. The test proxy has bounded connection lifetimes and a 60-second overall lifetime; fixture cleanup terminates its subprocesses. Existing app-test destination restrictions still apply to any separate signed-host/UI work.
+
+
+## Loopback message acknowledgement interruption (November 1)
+
+Run the focused package test with `BEAKRNET_RUN_APPLE_NETWORK_INTEGRATION=1` and filter `AppleNetworkIntegrationTests.lostAcknowledgementOnLoopback`. It binds only 127.0.0.1, does not start Bonjour browsing/advertisement, and uses the existing test TLS 1.2 PSK plus synthetic-certificate adapter and real signed Beakr handshake. No signed app host, production profile, or TLS identity installation is involved.
+
+After the receiver accepts a durable envelope, the test closes the real connection before its acknowledgement is sent. It reconnects, retries the unchanged disk-loaded envelope, verifies duplicate rejection, and sends the generated acknowledgement back over real TLS. Sender session and durable disk queue clear only after current-route acknowledgement acceptance. The disk-clear bridge, retry, and reconnection are test-driven, not the production app loop. Receiver state remains in memory. This does not prove production mTLS 1.3, receiver restart deduplication, UI/inbox behavior, raw packet loss, or physical-network recovery.
+
+The focused test passed November 1; see the acceptance document for evidence and limits. The pre-existing Bonjour lifecycle case was not rerun during this loopback-only step.

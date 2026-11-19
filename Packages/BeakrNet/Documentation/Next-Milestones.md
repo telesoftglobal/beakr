@@ -4,13 +4,17 @@ This roadmap begins after the completed transport and certificate-lifecycle foun
 
 The package boundaries, dependency direction, regression-risk model, and required test layers for this work are defined in [Package Architecture and Testing](Package-Architecture-and-Testing.md).
 
+## Node and routing design guidance
+
+Future networking work must follow [First-Class Node and Mesh Design Goals](Node-Identity-Routing-and-Relay-Principles-2026-10-30.md): device-neutral node roles, separate identity and routes, explicit relay authorization, and independent authority hosting and network participation. Its proposed work sequence does not alter existing release acceptance or authorize additional transport implementation.
+
 ## Current baseline
 
 BeakrNet already preserves explicit Control, Data, and Blackboard channel identity through encoding, queueing, relay and LAN delivery, route handoff, acknowledgement, duplicate suppression, expiry, and capability negotiation. The relay protects bounded Control capacity without starving application traffic. Authenticated sessions survive relay-to-LAN-to-relay changes without changing the envelope or repeating an accepted application operation.
 
 The missing layer is typed meaning above the envelope:
 
-- Control needs stable payload schemas and dispatch rules.
+- Control needs stable payload schemas and dispatch rules, including advisory authenticated peer-lifecycle transitions.
 - Data needs an application messaging contract, correlation, authorization, and durable node-side delivery state.
 - Blackboard needs a replicated-state model, repository contract, synchronization protocol, and explicit conflict behavior.
 
@@ -51,9 +55,43 @@ Every milestone must preserve these constraints:
 - Deterministic clocks, schedulers, repositories, and transports remain injectable for tests.
 - New wire formats require canonical encodings, independent versioning, size bounds, and golden fixtures.
 
+### Application state follow-up
+
+Consolidate application connectivity decision-making after Release 1 stabilization. Transport lifecycle, authenticated-peer presence, network availability, and transition timing should feed one authoritative state reducer; sidebar, mailbox, member, status, and accessibility presentations should consume shared semantic labels and styles instead of maintaining parallel mappings.
+
+### Network colour model — agreed and implemented November 9
+
+User approved local operational health independent of peer presence: green for ready with zero peers or connected; blue for starting/reconnecting/discovery; red for unavailable, failed or Local Network permission denied. Saved networks not selected for messaging remain grey. Device counts continue to report peer presence separately. Authority hosting remains independently blue when running.
+
+Mac and iPhone now share one colour mapping for network and status presentations. Network Status information and the no-peer explanation reflect this model. Existing state transitions and the 15-second initial discovery settling interval are unchanged. Both platform builds passed; live visual check pending.
+
+### Authority-managed capability follow-up
+
+After Release 1 stabilization, preserve the authority-owned policy, member capability, and negotiated-configuration boundaries described in [Authority-Managed Network Capabilities](Authority-Managed-Network-Capabilities.md). Custom compression and encryption providers remain deferred until their provider contracts, trust requirements, negotiation, compatibility testing, failure behavior, and administrative interface are explicitly designed.
+
+### Mac Network Parameters window placement — completed November 9
+
+User confirmed that View Parameters retains resized width and height across close/reopen and a full application restart, while opening beside the live right edge of Column 1 and top-aligned with the main window. Placement is constrained to the main display's usable bounds. This supersedes the earlier proposal for vertical centring and recalculating content-based height on each opening. Content remains scrollable as the device list grows. Settings retains its accepted resizing and relative-placement behavior.
+
+### Post-R3 authority-state invalidation
+
+Replace latency-sensitive authority polling with a lightweight authenticated invalidation event. When network-wide authority state changes, including a network rename, the authority sends connected members only the Network ID and newest signed-state generation. A member whose stored generation is older fetches and verifies the complete signed membership and revocation state before changing local application state. The notification is advisory and must never directly authorize or apply a name, role, service policy, membership, or revocation change.
+
+Connection establishment must also exchange the current authority-state generation so an offline member refreshes immediately after reconnecting even when it missed the original notification. Periodic authority refresh remains a fallback safety net.
+
+Required post-R3 test cases:
+
+- A connected member learns of a network rename within seconds, fetches the newer signed generation, and updates the name without changing Network ID or active-network selection.
+- An offline member misses the notification, reconnects, detects the generation mismatch during authenticated session establishment, and fetches the new name.
+- A current or future-generation notification does not mutate application state until the corresponding signed authority snapshot is fetched and verified.
+- Duplicate and stale notifications are idempotent and do not trigger repeated state changes or downgrade the stored generation.
+- Malformed, unauthenticated, wrong-network, and unauthorized notifications are rejected without fetching or mutating state.
+- A notification for one Network ID cannot refresh or rename another saved network.
+- If notification delivery fails, startup, reconnection, manual Refresh, and periodic maintenance still converge on the current signed authority state.
+
 ## Milestone 6: Typed Control protocol
 
-Define canonical, versioned payloads for the reserved Control namespace and a bounded codec/dispatcher. The initial implemented vocabulary should cover delivery acknowledgement, session liveness, queue pressure, synchronization hints, and protocol errors. Capability and protocol negotiation remain authoritative in the authenticated LAN handshake; an envelope may report or request renegotiation but cannot override the signed transcript. Route availability remains advisory and never authorizes a route.
+Define canonical, versioned payloads for the reserved Control namespace and a bounded codec/dispatcher. The initial implemented vocabulary should cover delivery acknowledgement, session liveness, queue pressure, synchronization hints, advisory peer lifecycle, and protocol errors. Capability and protocol negotiation remain authoritative in the authenticated LAN handshake; an envelope may report or request renegotiation but cannot override the signed transcript. Route availability and peer-lifecycle notices remain advisory and never authorize a route.
 
 Implement this milestone as the platform-neutral `BeakrNetControl` target within the existing BeakrNet Swift package. `BeakrNetControl` depends only on `BeakrNetCore`; it is not a separate Xcode application project and must not import Apple UI, networking, or Keychain frameworks.
 
@@ -165,3 +203,65 @@ A transport should be added only when a concrete product scenario requires it an
 - No rule engine, MCP surface, Siri/App Intents layer, or public Internet API.
 - No product-specific Blackboard schema or automatic conflict resolution without an approved policy.
 - No weakening of authentication, revocation freshness, envelope bounds, or route eligibility to simplify application protocols.
+
+
+## Minor feature request: authority hosting status in Networks — November 7, 2026
+
+Status: implemented November 9, 2026; Mac build passed. Visual confirmation pending; not an additional R1 acceptance requirement.
+
+User reports that per-network Authority Hosting status is currently visible only in app Settings, not in View Parameters (Network) from the Networks list. Request: make stopped/running hosting visible through the existing authority icon on each network row, potentially using a slash for Stopped.
+
+Proposed presentation for implementation review: normal authority icon for Running, slashed icon for Stopped, a distinct warning for Unavailable/failed, and a subtle progress indication for Starting. Provide a tooltip/accessibility label such as “Authority hosting: Stopped.” Also consider exposing the same read-only status in View Parameters (Network). Exact symbols and transitional presentation remain design details, not implemented behavior.
+
+Scope the indicator to known local authority hosting on this Mac; a client cannot infer that an authority is stopped merely from failed reachability. Preserve the distinction between authority ownership, hosting availability and messaging connectivity. Keep messaging colour/presence independent; displaying status must not start/stop hosting or switch networks. This request does not add Host/Co-Host service roles or simultaneous messaging/presence networks.
+
+November 9 implementation: the Networks settings sidebar now reuses the local authority hosting indicator already present on main network rows. Stopped adds a slash, running stays green, starting/stopping pulse orange, and failure uses a red warning. Missing observed state is Checking rather than Stopped. The independent Mac Network Parameters window includes the same read-only indicator with text. Tooltips and accessibility labels describe the local hosting state. No hosting actions or messaging semantics changed. My Mac BuildProject passed19:28:27; live visual confirmation remains pending. The preceding proposal records the original request.
+
+November 9 visual follow-up: user confirmed the hosting state display and checkmark-before-authority order. The accepted authority symbol is now person.badge.key.fill (green running) and person.badge.key (muted outline stopped), replacing server.rack and the custom slash. Transitional and failure presentations retain their state semantics.
+
+
+## Feature proposal: reset semantics and recovery — November 9, 2026
+
+Status: recorded for design review; no reset behavior or implementation authorized. “Factory Reset” is a working name, not a defined operation. User identified its meaning and consequences as important enough to resolve before implementation.
+
+Review alongside the broader application Settings and main-window information architecture. Decide whether distinct actions are needed for restoring application preferences, clearing remembered-device metadata, resetting a device's local Beakr state, and retiring an owned network/authority. These are candidate scopes, not approved reset modes.
+
+The design must specify:
+
+- Exactly which settings return to which defaults, and how defaults change across app versions.
+- What happens to profiles, network memberships, device identities, keys/certificates, authority ownership and hosting, saved permissions, remembered devices, message history, attachments and pending work.
+- Whether each effect is local only or requires a coordinated network action; deleting local credentials must not be described as revoking remote membership or removing remote copies.
+- Backup/export, recoverability, re-enrollment and consequences for other devices when this device owns an authority.
+- Preview and confirmation of the exact affected scope, plus behavior after cancellation, interruption or partial failure.
+- Clear names and placement that distinguish preference restoration from destructive data or identity removal.
+
+Do not infer a destructive factory-reset action from this feature entry. Resolve the product contract and review it before implementation; existing profiles, permissions and history remain untouched.
+
+## Deferred review: network parameters, duplicate pages, and trust recovery — November 9, 2026
+
+User explicitly deferred this work until tomorrow (November 10). Review Settings/Networks and independent View Parameters together before further implementation. They duplicate network/device/authority information but differ in hosting controls and local-device health presentation.
+
+The R1-E8-Test message “saved trust information has expired” maps to LANHandshakeError.staleRevocationSnapshot, not necessarily device certificate expiry. The revocation snapshot freshness limit is 24 hours plus allowed clock skew. Current UI does not expose the specific snapshot generation/expiry timestamps. Show which information is stale, the issuing network authority, last update, expiry, and an appropriate direct recovery action. Distinguish starting local authority hosting from refreshing signed trust data; do not imply missing peers caused this failure. Recovery has not been live-confirmed in this sequence.
+
+User accepts the network disclosure group's multi-row highlight as useful context for network, authority and devices. Do not narrow it as an unsolicited correction. Existing icon, colour and window behavior changes remain in place. No further parameters redesign or trust-recovery implementation authorized for tonight.
+
+November 9 later clarification: user reconsidered the grouped network selection after seeing its active blue highlight. Network-only header selection is now implemented with separate disclosure control and child rows (Mac build passed21:27:29; visual check pending), superseding the earlier instruction to retain the grouped highlight. This does not reopen the deferred parameters/trust review.
+
+## Settings consolidation — November 10, 2026
+
+The user authorized the first UI migration, superseding the November 9 deferral of duplicate-page work. Implemented a two-column local Settings window: This Device, Networks, Services. Networks provides instance disclosures with shared parameters, devices, registration and hosting controls. Main-window View Parameters opens that same Settings destination; the independent Mac parameters page is removed. Services > Messaging uses the existing single selected messaging network. Device membership/identity stays within its network context.
+
+Mac and iPhone builds pass; visual review and live menu-latency verification are pending. Preserve existing Settings window alignment and resizing. Review repeated View Parameters requests while Settings is already open, disclosure layout at narrow sizes, and all existing creation/join/hosting actions. The menu-time selection mutation has been removed as a suspected contributor to popup delay, not a measured fix.
+
+Later steps: deeper-panel toolbar history; explicit Local/Remote target selection and capability-dependent remote controls; specific trust freshness/issuer/expiry and recovery presentation. Remote configuration and trust protocol changes are not implemented. Reset semantics remain a design proposal only.
+
+
+## Automatic network credential recovery — November 17, 2026
+
+User authorized the credential recovery core and UI changes, superseding the earlier deferred trust-recovery work. Selecting a messaging network now prepares its credentials and starts its locally owned authority when needed. Automatic retries respect a persisted explicit Stop Hosting; explicit messaging selection or Start Hosting can restart it. Selecting another network does not stop existing authorities. Member devices never start a local authority for a remotely owned network.
+
+Credential recovery coalesces attempts, cancels/drains on profile changes and backgrounding, and retries transient authority unavailability with capped backoff (2–30 seconds), foreground and path recovery. Existing valid signed caches remain usable. Expired or revoked access and invalid signed records remain fail-closed; refresh does not grant permissions. Missing or expired transport certificates use the existing authenticated enrollment flow. Ordinary LAN restart failures retain their existing recovery behavior.
+
+Mac and iPhone network panels now expose Refresh Network Credentials, specific preparation/waiting/authority-stopped/authority-failed/expired/revoked states, authority identity, access and device-certificate expiry, and signed revocation record update/freshness dates. Details currently describe the selected messaging network. Network header status takes precedence over generic Connection failed. Existing pencil edits, Network ID alignment and service selection presentation are preserved.
+
+Validation: 12 package hosting/preferences tests passed. Isolated iOS simulator recovery/regression selections passed (11 executions plus the additional unavailable-endpoint test). The broader application suite initially had 86/89 passing; two relevant regressions were fixed and passed focused reruns. The unrelated inboxSaveFailureRetainsSenderQueue persistence assertion passed on targeted rerun without modification. Final iOS simulator build-for-testing, physical iPhone destination build (18:27:33), and My Mac build (18:27:49) passed. Scoped source diff whitespace check passed. Xcode destination restored to My Mac. No live app launch, live credential mutation, or physical-device recovery validation performed; live startup recovery and UI review remain pending.

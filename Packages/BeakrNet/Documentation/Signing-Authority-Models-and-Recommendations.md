@@ -365,6 +365,49 @@ The first implementation should adopt these explicit rules:
 
 These constraints keep the initial implementation focused and avoid prematurely creating a distributed-authority system.
 
+### Release 1 lifecycle-record and authority-policy design
+
+For Release 1, the lifecycle record is a compact durable checkpoint and authority policy is immutable injected configuration. The record stores facts required to resume safely. The coordinator derives user-visible state from those facts together with current Keychain availability and trust validation.
+
+The lifecycle record contains a format version, monotonic revision, installation identifier, durable phase, node identifier when one exists, public network binding, pending-enrollment reference, local-authority reference when present, and creation and update timestamps. Its durable phases are `unconfigured`, `identityReady`, `joining`, `installingMembership`, `member`, `leaving`, and `recoveryRequired`.
+
+The public network binding records the Network ID, display name, environment, pinned Authority ID and public key, active credential ID, membership and revocation generations, and optional control-plane URL. A pending enrollment records the invitation and request identifiers, expected network and authority, local Node ID, expiration and creation times, bounded retry metadata, and request status. The invitation secret must be removed after acceptance or consumption. A local-authority binding records the Authority ID, authority role, a persistent reference to authority-key material rather than private-key bytes, and the applicable authority, membership, and revocation generations.
+
+The lifecycle record must not embed node or authority private keys, complete credentials or certificates, revocation snapshots, consumed-invitation history, enrolled-device collections, transient user-interface state, or derived health such as credential expiry. Those values remain in their existing secure or bounded stores.
+
+Persisted phase is a recovery checkpoint rather than proof that an installation is usable. Startup derives node and authority lifecycle state from the record plus node-key availability, credential verification, trust-ledger verification, revocation freshness, certificate availability, authority-key availability, and pending-transaction recovery. For example, a persisted `member` record may derive `ready`, `locked`, `credentialExpired`, `credentialRevoked`, `trustStateStale`, `certificateRecoveryRequired`, or `recoveryRequired` as current conditions require.
+
+Every mutation uses a staged transaction:
+
+1. Validate the current revision and permitted transition.
+2. Generate or verify all cryptographic artifacts.
+3. Stage secure material and public records.
+4. Commit the lifecycle record last.
+5. Activate networking only after reloading and validating the committed record.
+
+Creation and enrollment retain explicit intermediate phases because they touch multiple stores. On restart, `joining` resumes or safely expires its pending request, `installingMembership` completes installation or rolls back staged artifacts, and `leaving` finishes deterministic cleanup. An impossible combination becomes `recoveryRequired`. Missing state never causes automatic identity or authority regeneration. The monotonic revision protects against overlapping user-interface, background, and renewal operations.
+
+Release 1 authority policy defines credential, certificate, invitation, and pending-request validity; allowed clock skew; limits for invitations, requests, devices, and payload bytes; the default and permitted device roles; and local-authorization requirements for approval and revocation. Policy construction rejects invalid or unbounded values.
+
+The governing policy is:
+
+- Exactly one operational authority exists.
+- Joined devices receive the ordinary member role; invitation input cannot request administrator authority.
+- Only network creation may establish the initial administrator.
+- Promotion, authority replication, and threshold authorization are deferred.
+- Approval and revocation require an injected local-authorization grant.
+- Credential scopes come from policy rather than untrusted request fields.
+- Invitation consumption and credential issuance form one authority transaction.
+- Rejection does not consume an invitation unless the request is identified as abusive.
+- Revocation is permanent for a credential ID; rejoining requires a fresh invitation and credential.
+- Resource limits are mandatory and have no unbounded defaults.
+
+`AuthorityRole` is omitted from the Release 1 enrollment request. A joining node has no legitimate reason to select it. Authority capability is local administrative state backed by possession of the separately protected authority key, not a role granted through ordinary enrollment.
+
+This design wraps rather than replaces existing authority behavior. `CredentialAuthority` remains responsible for credential signatures, `NetworkInvitation` remains the signed invitation representation, `ProfileMembershipSnapshot` remains published membership state, and revocation snapshots remain authoritative for removal. `NetworkBootstrap` should eventually be decomposed behind the coordinator because its current result exposes authority private-key bytes and is therefore unsuitable as the application-facing Release 1 boundary. `ProfileMembershipRecord` is not reused as the lifecycle record because it describes published session membership rather than local installation recovery or administrator authorization.
+
+The first implementation slice consists of lifecycle types, policy validation, deterministic state derivation, transition validation, and in-memory test stores. Enrollment wire messages and application UI follow only after this crash-recovery boundary is established.
+
 ### Node lifecycle
 
 The application should replace its coarse bootstrap states with an explicit lifecycle owned by platform-neutral logic:
@@ -476,6 +519,14 @@ The exchange must cryptographically bind:
 
 An invitation authorizes only an enrollment attempt. It never constitutes network membership.
 
+The Release 1 wire contract uses five independently versioned, canonically encoded messages: `EnrollmentInvitation`, `EnrollmentRequest`, `EnrollmentApproval`, `EnrollmentRejection`, and `EnrollmentConfirmation`. Each message has a strict type discriminator and a domain-separated signature. The invitation is authority-signed and carries a 32-byte one-time secret. The request embeds that invitation and binds a fresh request ID and 32-byte nonce to the joining Node ID, public key, and ordinary member role with the joining node's signature. Authority decisions bind the invitation, request, nonce, network, authority, and node. An approval additionally binds the issued credential and signed membership and revocation snapshots. The joining node's confirmation binds the approval, request, credential, network, and node before the authority treats the exchange as completed.
+
+Complete encoded payloads are capped at 256 KiB. Decoding rejects malformed, oversized, noncanonical, unknown-type, and unknown-version payloads before they reach coordinator state. The initial request schema permits only the ordinary member role; it contains no authority-administrator request field.
+
+The authority coordinator keeps bounded invitation and pending-request state. Re-submitting the identical signed request is idempotent; reusing its request ID with different content, submitting a second request for the same invitation, or submitting after the invitation is consumed fails explicitly. Approval requires an injected, fresh local-authorization grant bound to the request ID. The coordinator stages the next signed membership generation before atomically recording the approval decision and consuming the invitation. Membership activation then precedes finalization of the decision. If activation is interrupted, the exact signed approval and transaction remain recoverable; restart resumes publication without issuing another credential or advancing membership twice.
+
+The joining coordinator verifies the imported invitation before persisting the exact signed request and entering `joining`. A verified approval is staged before the lifecycle advances to an `installingMembership` transaction. Credential and trust activation occurs before the final `member` checkpoint, after which the joining node emits a signed confirmation. If activation or the final checkpoint is interrupted, restart resumes from the staged approval without generating another request, identity, credential, or network binding. A verified rejection returns to `identityReady` while preserving the existing node identity and removing the pending request.
+
 ### Security and resource bounds
 
 Package tests must cover at least:
@@ -516,6 +567,25 @@ Apple-platform implementations should store:
 - Consumed invitations and replay state in bounded persistent storage.
 
 Authority-key access must remain distinct from routine node-key access and should support requiring local user authorization.
+
+The portable Release 1 stores persist lifecycle, authority-enrollment, joining-enrollment, and membership-publication state as independently versioned canonical snapshots with a 4 MiB hard limit and atomic file replacement. Loading rejects malformed, oversized, noncanonical, duplicate, cross-referenced, or unsupported snapshots. Mutations update in-memory state only when the durable replacement succeeds. Staged and activated transaction identifiers remain persisted so reactivation is idempotent after process termination.
+
+These files contain protocol state, including pending invitations and requests, and must reside in an application-protected container with the platform's strongest appropriate data-protection class. They are not substitutes for Keychain storage: node and authority private keys remain behind the dedicated secure-store contracts. Diagnostics and backups must treat pending enrollment snapshots as sensitive because an unexpired invitation contains bearer material.
+
+Cold start maps only durable facts to an action: show unconfigured state, restore identity, wait for the exact pending request, resume network creation, resume joining installation, start the member runtime, finish leaving, or require recovery. Missing or inconsistent transaction information selects recovery rather than guessing or regenerating identity material.
+
+#### Durable enrollment implementation status
+
+The Release 1 durable enrollment layer is implemented in `BeakrNetEnrollment`:
+
+- `EnrollmentPersistence.swift` provides canonical JSON snapshots, a 4 MiB hard limit, atomic replacement, the persistent lifecycle store, and deterministic cold-start actions.
+- `PersistentAuthorityEnrollmentStateStore.swift` persists invitations, requests, invitation consumption, pending approvals, and completed decisions.
+- `PersistentJoiningEnrollmentStore.swift` persists exact joining requests, staged approvals, and activated approval transactions.
+- `PersistentAuthorityMembershipPublisher.swift` persists staged membership generations and idempotent activation markers for restart-safe publication.
+
+Cold start now deterministically selects unconfigured setup, identity restoration, waiting for an administrator, network-creation recovery, joining-installation recovery, member-runtime startup, leave completion, or explicit recovery.
+
+The enrollment test suite contains 34 tests across eight suites. Coverage includes store recreation, corrupt and noncanonical snapshots, oversized files, transaction recovery, and idempotent activation. The Xcode workspace builds successfully with this implementation, and repository diff validation reports no whitespace errors.
 
 ### Cold-start restoration
 
@@ -1015,6 +1085,132 @@ Each profile requires independent:
 
 Using a distinct node identity for each network is preferred because it prevents unrelated networks from correlating the device through a shared Node ID. If a device-level identity is retained internally for secure storage or recovery, it must not automatically become a cross-network protocol identity.
 
+### Consumer device identity and administration
+
+Commercial managed-network products commonly separate a stable installation or machine identity, a replaceable network-membership credential, and an authority-side device record that an authorized person can approve, revoke, or remove. BeakrNet should preserve these security boundaries without requiring casual Apple users to understand enterprise administration terminology. The device that creates a network is effectively its first administrator even when the interface calls it the network creator or manager.
+
+A consumer-oriented model should have these properties:
+
+- Each Beakr installation has a stable private installation identity in protected local storage.
+- Each network sees a distinct, privacy-preserving device identity; unrelated network authorities must not receive a shared global identifier that lets them correlate the device.
+- The stable identity supports recognition only. It never grants network access by itself.
+- Initial enrollment and re-enrollment require approval from a device currently authorized to manage that network.
+- Membership credentials are independent, replaceable, expiring, and revocable.
+- Forget Network removes the local membership and selected local state. When possible, it also sends a signed departure notice, but local cleanup must remain possible while the authority is unavailable.
+- An authority may retain an offline device record after an offline Forget until it receives the departure notice or a network manager removes the device.
+- Rejoining may be presented as a previously registered device requesting fresh approval, but recognition must never silently restore access.
+- Device names are descriptive metadata rather than identities. A shared device or renamed device must not gain authorization from its name.
+- Restoring or replacing an Apple device must not automatically copy an operational network identity to another physical device without an explicit recovery policy.
+
+The consumer interface should expose ordinary actions such as **Forget Network**, **Registered Devices**, **Remove Device**, **Rejoin**, and **Delete Network**. Internally these actions must retain the distinction between recognition, membership authorization, authority capability, and revocation.
+
+The core rule is:
+
+> Stable identity may help the authority recognize a returning installation, but only a current authority decision may authorize it.
+
+### Apple-native authority protection and recovery
+
+Normal Beakr administration should use the security ceremony Apple users already understand. Beakr should not require a separate application password for creating or managing a network. Authority keys and sensitive administrative capabilities should be protected by Keychain access controls and, where suitable, the Secure Enclave. Approving, removing, or promoting a device should require user presence through Face ID, Touch ID, the device passcode, or the equivalent Mac authentication experience.
+
+Authority promotion should use redundancy rather than copying a private authority key. The receiving device generates its own protected authority key, the current authority signs an update recognizing that key, and the updated authority state is distributed before an old authority is retired. A designated backup authority can then revoke and replace a lost primary authority after authenticating its local user through Apple security.
+
+The key on a lost sole-authority device cannot be recreated merely by knowing that device's passcode. Release 1 should therefore support or clearly plan for explicitly promoted backup authorities and explain the consequence of operating with only one authority. A future optional Apple-account-backed recovery mechanism may be considered, but it changes the trust model because the Apple account and synchronized Keychain become part of recovery. A universal Beakr password must not directly grant authority.
+
+The governing usability rule is:
+
+> Beakr uses Apple device authentication for routine authority operations and uses independently protected backup authorities for recovery, without asking the user to manage another password.
+
+### Local Context ownership after Forget
+
+Local application data belongs to the device owner's Beakr installation and its preserved network Context, not to the currently active Node ID or membership credential. A Context may own messages, attachments, Blackboard state, queues, and related metadata. It should be protected at rest by the Apple device and application sandbox, with any additional local data-protection keys secured independently from disposable network identity and membership keys.
+
+Forgetting a network must distinguish disconnecting from deleting data:
+
+- **Keep Data on This Device** removes active membership credentials and connections while detaching and preserving the Context.
+- **Delete Data from This Device** removes the membership, preserved Context, local data-protection material, and every associated Keychain item.
+
+A preserved Context remains locally accessible to the authenticated device owner, although operations requiring the network may be read-only or unavailable. A later membership for the same Network ID may reattach to that Context after explicit user confirmation. A changed Node ID must not make already stored local data unreadable.
+
+The governing storage rule is:
+
+> Network identity controls future communication and synchronization; it does not determine whether the device owner may read data already stored in a preserved local Context.
+
+### Consolidated Apple-native security model
+
+BeakrNet should adopt the useful security separation of a commercial managed-network product without exposing an account-centric or enterprise-administration experience. Apple device authentication establishes that the device owner approved a local action. Beakr authority establishes who may manage a network. Membership establishes which devices may communicate. A local Context establishes ownership of data already stored on a device.
+
+#### Beakr application
+
+- Trust the Apple device as the user-facing security boundary.
+- Use Face ID, Touch ID, the device passcode, or Mac authentication for sensitive actions instead of introducing a Beakr password.
+- Keep private keys in Keychain and, where appropriate, the Secure Enclave.
+- Maintain a stable private installation identity for continuity while exposing a distinct identity to each network.
+- Present consumer concepts such as networks, registered devices, approvals, removing devices, keeping data, and deleting data.
+- Give every Keychain item an explicit owner and deterministic replacement and deletion lifecycle; orphan certificates, keys, and profile records are defects.
+
+#### Network administration
+
+- The network creator becomes the first authority without requiring enterprise terminology in the interface.
+- Authority capability remains separate from ordinary membership; a normal registered device cannot approve or remove other devices.
+- Promoting another device requires an existing authority decision plus Apple device authentication.
+- The promoted device generates and protects its own authority key. Private authority keys are not copied between devices.
+- A network may recognize more than one authority-capable device so that a surviving authority can revoke and replace a lost authority.
+- Operating with a sole authority must be presented as a recovery risk. Future Apple-account-backed recovery may be optional, but it adds the Apple account and synchronized Keychain to the trust model.
+
+#### Device operations
+
+Device lifecycle keeps three concepts separate:
+
+1. **Installation identity** is stable and private to a Beakr installation. It supports continuity but never grants network access.
+2. **Network device identity** is distinct for each network and prevents unrelated networks from correlating the device.
+3. **Membership credential** is issued by that network's authority and is replaceable, expiring, and revocable.
+
+Recognition is not authorization. Joining creates or presents a network-specific identity and requests approval. Rejoining may recognize a previous installation but still requires fresh approval. Forget Network removes membership credentials and active connectivity and sends a signed departure notice when possible. Remove Device is an authority operation that revokes the device. Promote Device grants authority capability using the receiving device's own protected key. Delete Network removes locally owned network state and every associated credential and Keychain object.
+
+An offline Forget may temporarily leave an authority-side device record. It should appear as offline or formerly registered, remain removable by a network manager, and must not silently become a second active registration if the same installation rejoins.
+
+#### Data stores
+
+- Local data belongs to a preserved network Context rather than a disposable Node ID or membership credential.
+- Contexts own messages, attachments, Blackboard state, queues, and related metadata.
+- Local data remains inside Beakr's application sandbox and under Apple device protection; it is not public to unrelated applications.
+- Data-at-rest keys remain independent from network identity and membership keys.
+- Changing a Node ID must not make existing local data unreadable.
+- Rejoining the same Network ID may reattach a new membership to the preserved Context after explicit confirmation.
+
+Forget Network should offer **Keep Data on This Device**, which preserves the locally accessible Context, and **Delete Data from This Device**, which removes the membership, Context, stored data, local protection keys, and associated Keychain entries.
+
+### Release 1 implementation recommendation
+
+The duplicate-registration defect exposed coupled identity, authority, Keychain, and data-ownership decisions. Release 1 should establish the security contract before treating the symptom as a presentation problem.
+
+The persistent-object lifecycle must define when each object is created, whether it survives Forget, how it rotates, and what deletes it:
+
+| Object | Created | Survives Forget | Rotated | Deleted |
+| --- | --- | --- | --- | --- |
+| Installation identity | First launch | Yes | Exceptional recovery | Application security reset |
+| Network device identity | First join to a Network ID | Only with an explicitly retained Context | Re-enrollment policy | Permanent network-data deletion |
+| Membership credential | Approval | No | Renewal or rejoin | Forget, revocation, or expiry |
+| Authority key | Network creation or promotion | Only while authority is retained | Authority transition | Network deletion or authority revocation |
+| TLS key and certificate | Enrollment | No | Renewal | Replacement, Forget, or deletion |
+| Preserved Context | First local network use | User choice | Not applicable | Delete Data |
+| Local data key | Context creation | With its retained Context | Supported key rotation | Context deletion |
+
+Implementation proceeds in dependency order:
+
+1. Audit every creation, replacement, rollback, Forget, network deletion, and Context deletion path for Node identities, authority keys, TLS material, CA certificates, membership credentials, enrollment records, Context data, and data-protection keys.
+2. Give every Keychain object explicit ownership, recognizable metadata, deterministic replacement, and deterministic deletion.
+3. Separate Context retention from membership deletion and implement distinct Keep Data and Delete Data outcomes.
+4. Establish stable installation continuity and privacy-preserving per-network identity without allowing recognition to grant authorization.
+5. Correct Forget and rejoin so the same installation cannot silently create a second active registration for the same network.
+6. Provide authority-side Remove Device backed by revocation.
+7. Require Apple authentication for destructive and authority-sensitive operations.
+8. Add migration handling for existing profiles and orphaned development-era Keychain entries without silently deleting active material.
+
+Release 1 validation must cover online and offline Forget, both data-retention choices, rejoin with and without preserved data, credential and certificate renewal, failed and cancelled enrollment cleanup, device revocation, sole-authority loss, application update and reinstallation behavior, restoration behavior, and migration of existing Release 1 test data.
+
+Renaming the production application is not a Keychain-lifecycle solution. The display name does not reliably rename Keychain services or existing objects, while changing the bundle identifier or access groups may strand credentials and create additional artifacts. Keychain isolation experiments should use a separate diagnostic build identifier and explicit namespace.
+
 A device may eventually maintain connections to several network profiles concurrently, but each profile requires a separate host/session context. Data, routes, credentials, acknowledgements, and control messages must never cross profile boundaries.
 
 Membership in two networks does not authorize the device to bridge them. Cross-network forwarding or relay behavior would require a separate, explicit capability and policy approved by both trust domains. It is outside the initial enrollment scope.
@@ -1033,3 +1229,19 @@ Sharing a physical LAN does not grant membership in the same Beakr network. Auth
 Bonjour provides local-network discovery only. A Red node cannot discover another Red node on a different physical LAN using Bonjour alone. Cross-LAN discovery requires an approved rendezvous mechanism, configured relay, invitation information, or another authenticated discovery path. Route discovery and availability remain advisory: neither Bonjour nor a relay may authorize membership.
 
 Multi-network support therefore requires more than an account selector. It adds isolation, lifecycle, scheduling, notification, storage, and user-interface requirements and should follow successful delivery of the single-network enrollment model.
+
+### Authority listener ports and collision handling
+
+The authority listener port belongs to a network authority endpoint, not to Beakr as a global application setting. Bonjour advertises the resolved service host and listener port, so joining devices discover the endpoint dynamically rather than assuming that every Beakr authority uses a fixed port such as `8443`. A saved authority endpoint may retain the same host and port for direct reconnection and diagnostics.
+
+For a newly created network, a future implementation should allow the operating system to select an available port, then persist and advertise the assigned port for that authority. Once assigned, normal startup should attempt to reuse it. Beakr must not silently choose another port whenever binding fails: the existing listener may be another Beakr process, and changing ports without an authenticated endpoint update could produce conflicting authority state or cause devices to connect unpredictably.
+
+Listener startup failure should distinguish these cases where possible:
+
+- If the existing listener can be authenticated as the same Beakr authority, report that another copy of Beakr is running.
+- If the listener is unrelated or cannot be verified, report a port conflict requiring attention.
+- If an established authority endpoint must move, perform an explicit controlled migration that updates and signs the authority configuration before advertising the replacement endpoint.
+
+Release 1 retains its stable configured port and visible red collision state. It does not expose an editable global port or automatically migrate an occupied endpoint. This behavior keeps duplicate development instances diagnosable and avoids masking a real collision.
+
+The authority port should remain visible as read-only diagnostic information in Network Parameters. The existing authority endpoint display already provides the Bonjour host and port number for Release 1. A later presentation may separate that value into `Address` and `Port`, but neither should normally require casual users to configure networking manually.

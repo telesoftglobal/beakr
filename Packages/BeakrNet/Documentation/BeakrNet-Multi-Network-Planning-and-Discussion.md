@@ -1,5 +1,9 @@
 # BeakrNet — Multi-Network Planning and Discussion
 
+## October 30 design guidance
+
+[First-Class Node and Mesh Design Goals](Node-Identity-Routing-and-Relay-Principles-2026-10-30.md) guides future multi-network, authority, and relay design. All devices remain first-class nodes; platform constraints belong in capability and transport adapters. The implementation-status descriptions below reflect the earlier planning baseline and must be checked against current code before implementation.
+
 ## Purpose
 
 This document describes how profile-driven access to multiple Beakr networks affects BeakrNet's protocol, security, persistence, runtime, application, migration, and testing design.
@@ -215,7 +219,7 @@ Network-path recovery should automatically restart discovery after Wi-Fi becomes
 
 The expected recovery sequence is orange while the LAN runtime restarts, blue as soon as the local runtime and discovery are ready, and green as soon as at least one peer completes authenticated admission. Green must be driven by peer admission and removal events rather than by a periodic user-interface poll. Consequently, the blue-to-green transition should follow the completed peer handshake immediately instead of waiting as long as the membership refresh interval.
 
-The periodic 15-second refresh remains useful as a reconciliation safety net for signed membership, cached friendly names, and unexpected missed state. It is not the primary source of live route presence and should not delay the toolbar icon, Networks dialog, or recipient presence indicators.
+The periodic 15-second reconciliation samples only local Bonjour names, cached friendly names, and authenticated-peer presence. It must not fetch signed membership or revocation state. Authority trust refresh occurs on startup, reconnection, manual Refresh, and the independent scheduled maintenance cadence. It is not the primary source of live route presence and should not delay the toolbar icon, Networks dialog, or recipient presence indicators.
 
 The first release remains intentionally simple:
 
