@@ -47,6 +47,7 @@ public actor ProfileBonjourRuntimeService {
 
     public static func make(
         localNodeID: NodeID,
+        networkID: NetworkID? = nil,
         localAdvertisementNonce: Data,
         browser: any BonjourBrowsing,
         connectionFactory: any BonjourConnectionFactory,
@@ -60,34 +61,31 @@ public actor ProfileBonjourRuntimeService {
         precondition(localAdvertisementNonce.count == 32)
         let discovery = BonjourDiscoveryCoordinator(
             localNodeID: localNodeID,
+            networkID: networkID,
             browser: browser,
             connectionFactory: connectionFactory,
             diagnosticSink: bonjourDiagnosticSink,
-            connectionHandler: { candidate, connection in
-                Task {
-                    guard let peerSessionID = await sessionID(candidate.nodeIDHint) else {
-                        connection.cancel()
-                        diagnosticSink(.acceptedConnectionRejected(connectionID: connection.id))
-                        return
-                    }
-                    do {
-                        _ = try await connections.authenticateAndAdmit(
-                            connection: connection,
-                            role: .initiator,
-                            expectedPeerNodeID: candidate.nodeIDHint,
-                            advertisementNonce: candidate.key.advertisementNonce,
-                            sessionID: peerSessionID
-                        )
-                    } catch {
-                        diagnosticSink(.authenticationFailed(
-                            connectionID: connection.id,
-                            role: .initiator
-                        ))
-                    }
-                }
-            },
             connectionEndedHandler: { connectionID in
                 Task { await connections.connectionEnded(connectionID) }
+            },
+            authenticateConnection: { candidate, connection in
+                guard let peerSessionID = await sessionID(candidate.nodeIDHint) else {
+                    diagnosticSink(.acceptedConnectionRejected(connectionID: connection.id))
+                    return false
+                }
+                do {
+                    _ = try await connections.authenticateAndAdmit(
+                        connection: connection,
+                        role: .initiator,
+                        expectedPeerNodeID: candidate.nodeIDHint,
+                        advertisementNonce: candidate.key.advertisementNonce,
+                        sessionID: peerSessionID
+                    )
+                    return true
+                } catch {
+                    diagnosticSink(.authenticationFailed(connectionID: connection.id, role: .initiator))
+                    return false
+                }
             }
         )
         let listener = BonjourListenerCoordinator(
@@ -116,6 +114,9 @@ public actor ProfileBonjourRuntimeService {
                         ))
                     }
                 }
+            },
+            connectionEndedHandler: { connectionID in
+                Task { await connections.connectionEnded(connectionID) }
             }
         )
         return ProfileBonjourRuntimeService(
@@ -144,6 +145,23 @@ public actor ProfileBonjourRuntimeService {
     }
 
     public func running() -> Bool { isRunning }
+
+    public struct ResourceSnapshot: Sendable, Equatable {
+        public let discovery: BonjourDiscoveryCoordinator.ResourceSnapshot
+        public let transports: ProfileLANConnectionController.ResourceSnapshot
+    }
+
+    /// Each owner is sampled on its actor. The combined sample is not atomic
+    /// across owners, so brief differences during transitions are expected.
+    public func resourceSnapshot() async -> ResourceSnapshot {
+        let discoverySnapshot = await discovery.resourceSnapshot()
+        let transportSnapshot = await connections.resourceSnapshot()
+        return ResourceSnapshot(discovery: discoverySnapshot, transports: transportSnapshot)
+    }
+
+    public func peerIPAddresses() async -> [NodeID: String] {
+        await connections.peerIPAddresses()
+    }
 
     public func discoveredDisplayNames() async -> [NodeID: String] {
         var names: [NodeID: String] = [:]

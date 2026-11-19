@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Network
 import BeakrNetCore
 import BeakrNetSecurity
@@ -6,7 +7,19 @@ import BeakrNetAuthority
 
 @main
 struct BeakrNetRelayServerMain {
-    static func main() async throws {
+    static func main() async {
+        do {
+            try await run()
+        } catch {
+            // Do not echo command arguments, credentials, or error userInfo.
+            let failure = error as NSError
+            let message = "🔴 [FAIL] BeakrNetRelayServer type=\(String(reflecting: type(of: error))) domain=\(failure.domain) code=\(failure.code)\n"
+            FileHandle.standardError.write(Data(message.utf8))
+            exit(EXIT_FAILURE)
+        }
+    }
+
+    private static func run() async throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
         let listenOnLAN = arguments.count == 7 && arguments[6] == "--lan"
         guard (arguments.count == 6 || listenOnLAN),
@@ -102,7 +115,7 @@ private actor RelayServer {
         }
         listener.start(queue: DispatchQueue(label: "BeakrNetRelayServer.listener"))
         let hostDescription = listenOnLAN ? "all local interfaces" : "127.0.0.1"
-        print("BeakrNet relay listening on \(hostDescription):\(port.rawValue)")
+        print("[INFO] BeakrNet relay listening on \(hostDescription):\(port.rawValue)")
 
         try await withTaskCancellationHandler {
             while !Task.isCancelled {
@@ -173,7 +186,7 @@ private actor RelayServer {
             }
             connections[nodeID] = connection
             nodeIDsByConnection[identifier] = nodeID
-            print("Registered node \(nodeID.rawValue.uuidString)")
+            print("[INFO] Registered node \(nodeID.rawValue.uuidString)")
             try await NetworkConnectionIO.send(
                 .registrationAccepted(nodeID: nodeID),
                 over: connection
@@ -216,7 +229,7 @@ private actor RelayServer {
         if connections[nodeID] === connection {
             connections.removeValue(forKey: nodeID)
         }
-        print("Disconnected node \(nodeID.rawValue.uuidString)")
+        print("[INFO] Disconnected node \(nodeID.rawValue.uuidString)")
     }
 }
 

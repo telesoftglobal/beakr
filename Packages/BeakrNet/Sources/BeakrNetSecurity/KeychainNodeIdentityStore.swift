@@ -16,13 +16,19 @@ public struct KeychainNodeIdentityStore: Sendable {
     }
 
     public func loadOrCreate() throws -> NodeIdentity {
-        if let privateKey = try loadPrivateKey() {
-            return try NodeIdentity(privateKeyRepresentation: privateKey)
-        }
+        if let identity = try load() { return identity }
 
         let identity = NodeIdentity()
         try save(privateKey: identity.privateKeyRepresentation)
         return identity
+    }
+
+    /// Loads an existing identity without creating replacement key material.
+    /// Restoration and recovery paths must use this API so a missing Keychain
+    /// item cannot silently change the node's identity.
+    public func load() throws -> NodeIdentity? {
+        guard let privateKey = try loadPrivateKey() else { return nil }
+        return try NodeIdentity(privateKeyRepresentation: privateKey)
     }
 
     public func delete() throws {

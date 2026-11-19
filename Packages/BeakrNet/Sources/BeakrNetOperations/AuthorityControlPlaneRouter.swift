@@ -1,6 +1,7 @@
 import Foundation
 import BeakrNetAuthority
 import BeakrNetCore
+import BeakrNetEnrollment
 
 public struct AuthorityControlPlanePolicy: Equatable, Sendable {
     public let maximumConcurrentRequests: Int
@@ -24,6 +25,7 @@ public struct AuthorityControlPlanePolicy: Equatable, Sendable {
 /// routed to one authority service, and recorded without request payload data.
 public actor AuthorityControlPlaneRouter {
     private let enrollment: CertificateEnrollmentHTTPEndpoint
+    private let releaseEnrollment: EnrollmentRequestHTTPEndpoint?
     private let joining: NetworkInvitationHTTPEndpoint?
     private let administration: AuthorityAdministrationHTTPEndpoint?
     private let membership: ProfileMembershipHTTPEndpoint
@@ -36,6 +38,7 @@ public actor AuthorityControlPlaneRouter {
 
     public init(
         enrollment: CertificateEnrollmentHTTPEndpoint,
+        releaseEnrollment: EnrollmentRequestHTTPEndpoint? = nil,
         joining: NetworkInvitationHTTPEndpoint? = nil,
         administration: AuthorityAdministrationHTTPEndpoint? = nil,
         membership: ProfileMembershipHTTPEndpoint,
@@ -46,6 +49,7 @@ public actor AuthorityControlPlaneRouter {
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.enrollment = enrollment
+        self.releaseEnrollment = releaseEnrollment
         self.joining = joining
         self.administration = administration
         self.membership = membership
@@ -101,7 +105,9 @@ public actor AuthorityControlPlaneRouter {
         let response: CertificateEnrollmentHTTPResponse
         switch endpoint {
         case .enrollmentChallenge, .enrollment:
-            if request.path == NetworkInvitationHTTPEndpoint.joinPath, let joining {
+            if let releaseEnrollment, await releaseEnrollment.handles(path: request.path) {
+                response = await releaseEnrollment.handle(request)
+            } else if request.path == NetworkInvitationHTTPEndpoint.joinPath, let joining {
                 response = await joining.handle(request)
             } else {
                 response = await enrollment.handle(request)
@@ -135,6 +141,8 @@ public actor AuthorityControlPlaneRouter {
         case CertificateEnrollmentHTTPEndpoint.challengePath: .enrollmentChallenge
         case CertificateEnrollmentHTTPEndpoint.enrollmentPath: .enrollment
         case NetworkInvitationHTTPEndpoint.joinPath: .enrollment
+        case let path where path == EnrollmentRequestHTTPEndpoint.path
+            || path.hasPrefix(EnrollmentRequestHTTPEndpoint.path + "/"): .enrollment
         case ProfileMembershipHTTPEndpoint.path: .membershipRead
         case RevocationSnapshotHTTPEndpoint.path: .revocationRead
         case AuthorityAdministrationHTTPEndpoint.invitationPath: .administration

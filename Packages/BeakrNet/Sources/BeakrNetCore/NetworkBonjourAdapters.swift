@@ -1,6 +1,7 @@
 #if canImport(Network)
 import Foundation
 import Network
+import dnssd
 import Security
 
 public enum NetworkBonjourAdapterError: Error, Equatable, Sendable {
@@ -121,8 +122,11 @@ public final class NetworkBonjourBrowser: BonjourBrowsing, @unchecked Sendable {
     }
 
     private static func isPermissionDenied(_ error: NWError) -> Bool {
-        if case .posix(let code) = error { return code == .EACCES }
-        return false
+        switch error {
+        case .posix(let code): return code == .EACCES || code == .EPERM
+        case .dns(let code): return code == kDNSServiceErr_PolicyDenied
+        default: return false
+        }
     }
 
     private static func safeReason(_ error: NWError) -> String {
@@ -137,7 +141,7 @@ public final class NetworkBonjourBrowser: BonjourBrowsing, @unchecked Sendable {
 
 public final class NetworkBonjourConnectionFactory: BonjourConnectionFactory, @unchecked Sendable {
     private let registry: NetworkBonjourEndpointRegistry
-    private let parameters: @Sendable () -> NWParameters
+    private let parameters: @Sendable (UUID, BonjourEndpointID, NWEndpoint) throws -> NWParameters
     private let queue: DispatchQueue
 
     public init(
@@ -147,15 +151,27 @@ public final class NetworkBonjourConnectionFactory: BonjourConnectionFactory, @u
     ) {
         self.registry = registry
         self.queue = queue
-        self.parameters = parameters
+        self.parameters = { _, _, _ in parameters() }
+    }
+
+    public init(
+        registry: NetworkBonjourEndpointRegistry,
+        queue: DispatchQueue = DispatchQueue(label: "BeakrNet.BonjourConnection"),
+        contextualParameters: @escaping @Sendable (UUID, BonjourEndpointID, NWEndpoint) throws -> NWParameters
+    ) {
+        self.registry = registry
+        self.queue = queue
+        self.parameters = contextualParameters
     }
 
     public func makeConnection(to endpointID: BonjourEndpointID) throws -> any BonjourConnection {
         guard let endpoint = registry.endpoint(for: endpointID) else {
             throw NetworkBonjourAdapterError.endpointUnavailable
         }
+        let connectionID = UUID()
         return NetworkBonjourConnection(
-            connection: NWConnection(to: endpoint, using: parameters()),
+            id: connectionID,
+            connection: NWConnection(to: endpoint, using: try parameters(connectionID, endpointID, endpoint)),
             queue: queue
         )
     }
@@ -164,6 +180,17 @@ public final class NetworkBonjourConnectionFactory: BonjourConnectionFactory, @u
 public final class NetworkBonjourConnection: BonjourConnection, @unchecked Sendable {
     public let id: UUID
     public let connection: NWConnection
+
+    public var remoteIPAddress: String? {
+        guard let path = connection.currentPath, path.status == .satisfied,
+              case .hostPort(let host, _) = path.remoteEndpoint else { return nil }
+        switch host {
+        case .ipv4(let address): return String(describing: address)
+        case .ipv6(let address): return String(describing: address)
+        default: return nil
+        }
+    }
+
     private let queue: DispatchQueue
 
     public init(
@@ -314,18 +341,10 @@ public final class NetworkBonjourListener: BonjourListening, @unchecked Sendable
         }
         listener.newConnectionHandler = { connection in
             let wrappedConnection = NetworkBonjourConnection(connection: connection)
-            wrappedConnection.start { state in
-                switch state {
-                case .ready:
-                    wrappedConnection.connection.stateUpdateHandler = nil
-                    eventHandler(.connection(wrappedConnection))
-                case .failed, .cancelled:
-                    wrappedConnection.connection.stateUpdateHandler = nil
-                    wrappedConnection.cancel()
-                case .setup, .preparing, .waiting:
-                    break
-                }
-            }
+            BonjourIncomingConnectionHandler(
+                connection: wrappedConnection,
+                eventHandler: eventHandler
+            ).start()
         }
         listener.start(queue: queue)
     }
@@ -335,8 +354,11 @@ public final class NetworkBonjourListener: BonjourListening, @unchecked Sendable
     }
 
     private static func isPermissionDenied(_ error: NWError) -> Bool {
-        if case .posix(let code) = error { return code == .EACCES }
-        return false
+        switch error {
+        case .posix(let code): return code == .EACCES || code == .EPERM
+        case .dns(let code): return code == kDNSServiceErr_PolicyDenied
+        default: return false
+        }
     }
 
     private static func safeReason(_ error: NWError) -> String {
@@ -345,6 +367,52 @@ public final class NetworkBonjourListener: BonjourListening, @unchecked Sendable
         case .dns(let code): return "dns-\(code)"
         case .tls(let code): return "tls-\(code)"
         default: return "other-network-error"
+        }
+    }
+}
+
+// Owns an incoming connection until its terminal callback. Releasing that ownership
+// breaks the callback cycle without changing NWConnection handlers after cancellation.
+final class BonjourIncomingConnectionHandler: @unchecked Sendable {
+    private let lock = NSLock()
+    private var connection: (any BonjourConnection)?
+    private var handedOff = false
+    private let eventHandler: @Sendable (BonjourListenerEvent) -> Void
+
+    init(
+        connection: any BonjourConnection,
+        eventHandler: @escaping @Sendable (BonjourListenerEvent) -> Void
+    ) {
+        self.connection = connection
+        self.eventHandler = eventHandler
+    }
+
+    func start() {
+        let connection = lock.withLock { self.connection }
+        connection?.start { state in self.handle(state) }
+    }
+
+    private func handle(_ state: BonjourConnectionState) {
+        let action: ((any BonjourConnection), Bool)? = lock.withLock {
+            guard let connection else { return nil }
+            switch state {
+            case .ready:
+                guard !handedOff else { return nil }
+                handedOff = true
+                return (connection, true)
+            case .failed, .cancelled:
+                self.connection = nil
+                return (connection, handedOff)
+            case .setup, .preparing, .waiting:
+                return nil
+            }
+        }
+        guard let (connection, notify) = action else { return }
+        if state == .ready {
+            eventHandler(.connection(connection))
+        } else {
+            if case .failed = state { connection.cancel() }
+            if notify { eventHandler(.connectionEnded(connection.id)) }
         }
     }
 }

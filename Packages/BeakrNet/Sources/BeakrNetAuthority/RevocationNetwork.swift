@@ -7,6 +7,13 @@ public actor RevocationSnapshotHTTPEndpoint {
     public static let maximumBodySize = 1_048_576
 
     private var snapshot: CredentialRevocationSnapshot
+    private var snapshotProvider: (@Sendable (Date) async throws -> CredentialRevocationSnapshot)?
+
+    func setSnapshotProvider(
+        _ provider: @escaping @Sendable (Date) async throws -> CredentialRevocationSnapshot
+    ) {
+        snapshotProvider = provider
+    }
 
     public init(snapshot: CredentialRevocationSnapshot) {
         self.snapshot = snapshot
@@ -23,29 +30,44 @@ public actor RevocationSnapshotHTTPEndpoint {
     }
 
     public func handle(
-        _ request: CertificateEnrollmentHTTPRequest
-    ) -> CertificateEnrollmentHTTPResponse {
+        _ request: CertificateEnrollmentHTTPRequest,
+        now: Date = Date()
+    ) async -> CertificateEnrollmentHTTPResponse {
         guard request.path == Self.path else { return response(status: 404) }
         guard request.method == "GET" else {
             return response(status: 405, headers: ["allow": "GET"])
         }
         guard request.body.isEmpty else { return response(status: 400) }
 
-        let etag = Self.etag(for: snapshot)
+        let responseSnapshot: CredentialRevocationSnapshot
+        if let snapshotProvider {
+            do {
+                // The coordinator is the durable source of truth. Keep one
+                // immutable snapshot for this response across actor suspension.
+                responseSnapshot = try await snapshotProvider(now)
+            } catch {
+                // Do not disguise failed durable renewal as a successful 304.
+                return response(status: 503)
+            }
+        } else {
+            responseSnapshot = snapshot
+        }
+
+        let etag = Self.etag(for: responseSnapshot)
         if let condition = header("if-none-match", in: request.headers) {
             guard condition == etag else {
-                return response(status: 200, body: encodedSnapshot(), etag: etag)
+                return response(status: 200, body: encodedSnapshot(responseSnapshot), etag: etag)
             }
             return response(status: 304, etag: etag)
         }
-        return response(status: 200, body: encodedSnapshot(), etag: etag)
+        return response(status: 200, body: encodedSnapshot(responseSnapshot), etag: etag)
     }
 
     public static func etag(for snapshot: CredentialRevocationSnapshot) -> String {
         "\"beakrnet-revocations-\(snapshot.claims.generatedAtMilliseconds)\""
     }
 
-    private func encodedSnapshot() -> Data {
+    private func encodedSnapshot(_ snapshot: CredentialRevocationSnapshot) -> Data {
         // A valid snapshot is always encodable. Return an empty body only if a
         // future model change violates that invariant; the client fails closed.
         (try? RevocationSnapshotWireCodec.encode(snapshot)) ?? Data()

@@ -78,6 +78,28 @@ struct ProfileRuntimeStorageTests {
         }
     }
 
+    @Test("Enrollment bootstrap storage can be bound to its new profile")
+    func enrollmentBootstrapStorageCanBeBound() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let enrollment = root.appendingPathComponent("enrollment", isDirectory: true)
+        let trust = root.appendingPathComponent("trust", isDirectory: true)
+        try FileManager.default.createDirectory(at: enrollment, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: trust, withIntermediateDirectories: true)
+        try Data("pending".utf8).write(to: enrollment.appendingPathComponent("joining.json"))
+        try Data("verified".utf8).write(to: trust.appendingPathComponent("membership.json"))
+        let red = try profile(name: "Red")
+
+        let runtime = try await ProfileRuntimeStorage.open(
+            profile: red, rootURL: root, policy: policy(), now: now
+        )
+
+        #expect(runtime.profile == red)
+        #expect(FileManager.default.fileExists(atPath: runtime.paths.manifestURL.path))
+        #expect(FileManager.default.fileExists(atPath: enrollment.appendingPathComponent("joining.json").path))
+        #expect(FileManager.default.fileExists(atPath: trust.appendingPathComponent("membership.json").path))
+    }
+
     @Test("Message state can live outside the profile-owned runtime root")
     func contextOwnedMessageState() async throws {
         let directory = temporaryDirectory()

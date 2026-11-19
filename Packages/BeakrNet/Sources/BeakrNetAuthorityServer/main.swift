@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 #if os(macOS)
 import Network
@@ -9,7 +10,19 @@ import BeakrNetSecurity
 
 @main
 struct BeakrNetAuthorityServerMain {
-    static func main() async throws {
+    static func main() async {
+        do {
+            try await run()
+        } catch {
+            // Do not echo command arguments, credentials, or error userInfo.
+            let failure = error as NSError
+            let message = "🔴 [FAIL] BeakrNetAuthorityServer type=\(String(reflecting: type(of: error))) domain=\(failure.domain) code=\(failure.code)\n"
+            FileHandle.standardError.write(Data(message.utf8))
+            exit(EXIT_FAILURE)
+        }
+    }
+
+    private static func run() async throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
         let listenOnLAN = arguments.count == 10 && arguments[9] == "--lan"
         guard (arguments.count == 9 || listenOnLAN),
@@ -109,7 +122,7 @@ private actor AuthorityHTTPSServer {
             Task { await self?.handle(connection) }
         }
         listener.start(queue: DispatchQueue(label: "BeakrNetAuthorityServer.listener"))
-        print("BeakrNet authority listening on \(listenOnLAN ? "all local interfaces" : "127.0.0.1"):\(port.rawValue)")
+        print("[INFO] BeakrNet authority listening on \(listenOnLAN ? "all local interfaces" : "127.0.0.1"):\(port.rawValue)")
         try await withTaskCancellationHandler {
             while !Task.isCancelled { try await Task.sleep(for: .seconds(3_600)) }
         } onCancel: { listener.cancel() }
@@ -170,6 +183,6 @@ private enum AuthorityServerError: Error { case connectionClosed, emptyRead }
 #else
 @main
 struct BeakrNetAuthorityServerMain {
-    static func main() { print("BeakrNetAuthorityServer requires macOS") }
+    static func main() { print("[INFO] BeakrNetAuthorityServer requires macOS") }
 }
 #endif

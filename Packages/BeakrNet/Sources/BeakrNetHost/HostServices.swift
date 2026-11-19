@@ -1,6 +1,7 @@
 import Foundation
 import BeakrBlackboard
 import BeakrNetCore
+import BeakrNetControl
 import BeakrNetData
 import BeakrNetTransfer
 
@@ -255,6 +256,9 @@ public actor AuthenticatedTransportRouteOwner: HostManagedRoute {
     private let driver: SessionDeliveryDriver
     private let incomingEnvelopeSink: ProfileConnectionRegistry.IncomingEnvelopeSink
     private let deliveryAcknowledgementSink: ProfileConnectionRegistry.DeliveryAcknowledgementSink
+    private let peerLifecycleSink: ProfileConnectionRegistry.PeerLifecycleSink
+    private let peerNetworkInfoChanged: @Sendable () async -> Void
+    private var reportedNetworkInfo: (info: PeerNetworkInfo, receivedAt: Date)?
     private var activeGeneration: UInt64?
     private var receiveTask: Task<Void, Never>?
 
@@ -262,8 +266,10 @@ public actor AuthenticatedTransportRouteOwner: HostManagedRoute {
         transport: any BeakrNetTransport,
         coordinator: PeerRouteCoordinator,
         driver: SessionDeliveryDriver,
-        incomingEnvelopeSink: @escaping ProfileConnectionRegistry.IncomingEnvelopeSink = { _ in },
-        deliveryAcknowledgementSink: @escaping ProfileConnectionRegistry.DeliveryAcknowledgementSink = { _ in }
+        incomingEnvelopeSink: @escaping ProfileConnectionRegistry.IncomingEnvelopeSink = { _ in false },
+        deliveryAcknowledgementSink: @escaping ProfileConnectionRegistry.DeliveryAcknowledgementSink = { _ in },
+        peerLifecycleSink: @escaping ProfileConnectionRegistry.PeerLifecycleSink = { _, _ in },
+        peerNetworkInfoChanged: @escaping @Sendable () async -> Void = {}
     ) async {
         id = await transport.id
         kind = await transport.kind
@@ -272,6 +278,8 @@ public actor AuthenticatedTransportRouteOwner: HostManagedRoute {
         self.driver = driver
         self.incomingEnvelopeSink = incomingEnvelopeSink
         self.deliveryAcknowledgementSink = deliveryAcknowledgementSink
+        self.peerLifecycleSink = peerLifecycleSink
+        self.peerNetworkInfoChanged = peerNetworkInfoChanged
     }
 
     public func setPermitted(_ permitted: Bool) async {
@@ -299,7 +307,7 @@ public actor AuthenticatedTransportRouteOwner: HostManagedRoute {
             await driver.register(transport, generation: generation)
             activeGeneration = generation
             let transportID = id
-            receiveTask = Task { [transport, driver, incomingEnvelopeSink, deliveryAcknowledgementSink] in
+            receiveTask = Task { [transport, driver, incomingEnvelopeSink, deliveryAcknowledgementSink, peerLifecycleSink] in
                 while !Task.isCancelled, let envelope = await transport.receive() {
                     guard let result = try? await driver.receive(
                         envelope,
@@ -320,6 +328,32 @@ public actor AuthenticatedTransportRouteOwner: HostManagedRoute {
                         continue
                     }
 
+                    if envelope.payloadType == ControlMessageType.peerNetworkInfo.rawValue {
+                        if result.acceptance == .accepted,
+                           case .peerNetworkInfo(let header, let info) = try? ControlCodec().decode(envelope: envelope),
+                           header.context == ControlContext(networkID: envelope.networkID, sourceNodeID: envelope.sourceNodeID, destinationNodeID: envelope.destinationNodeID, sessionID: envelope.sessionID),
+                           self.activeGeneration == generation {
+                            let changed = self.reportedNetworkInfo?.info != info
+                                || self.peerReportedIPv4Address() != info.ipv4Address
+                            self.reportedNetworkInfo = (info, Date())
+                            if changed { await self.peerNetworkInfoChanged() }
+                        }
+                        continue
+                    }
+
+                    if envelope.payloadType == ControlMessageType.peerLifecycle.rawValue,
+                       case .peerLifecycle(_, let notice) = try? ControlCodec().decode(envelope: envelope) {
+                        await peerLifecycleSink(envelope.sourceNodeID, notice)
+                        continue
+                    }
+
+                    // Session replay acceptance precedes application persistence. A
+                    // duplicate may be a retry of an earlier failed save, so it must
+                    // revisit the idempotent sink before we can acknowledge it.
+                    guard result.acceptance == .accepted || result.acceptance == .duplicate,
+                          await incomingEnvelopeSink(envelope),
+                          self.activeGeneration == generation,
+                          !Task.isCancelled else { continue }
                     if let acknowledgement = result.acknowledgement,
                        let payload = try? JSONEncoder().encode(acknowledgement) {
                         let acknowledgementEnvelope = BeakrNetEnvelope(
@@ -335,12 +369,10 @@ public actor AuthenticatedTransportRouteOwner: HostManagedRoute {
                         )
                         try? await transport.send(acknowledgementEnvelope)
                     }
-                    if result.acceptance == .accepted {
-                        await incomingEnvelopeSink(envelope)
-                    }
                 }
             }
         } else if let generation = activeGeneration {
+            reportedNetworkInfo = nil
             receiveTask?.cancel()
             receiveTask = nil
             await driver.unregister(transportID: id, generation: generation)
@@ -351,6 +383,12 @@ public actor AuthenticatedTransportRouteOwner: HostManagedRoute {
             )
             activeGeneration = nil
         }
+    }
+
+    public func peerReportedIPv4Address(now: Date = Date()) -> String? {
+        guard activeGeneration != nil, let report = reportedNetworkInfo,
+              now.timeIntervalSince(report.receivedAt) < 20 else { return nil }
+        return report.info.ipv4Address
     }
 
     public func generation() -> UInt64? { activeGeneration }

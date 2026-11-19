@@ -173,6 +173,7 @@ public struct KeychainLANTLSIdentityStore: Sendable {
         }
         var addition = privateKeyQuery
         addition[kSecValueRef as String] = key
+        addition[kSecAttrLabel as String] = "\(service).lan-tls.private-key"
         addition[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(addition as CFDictionary, nil)
         guard status == errSecSuccess else {

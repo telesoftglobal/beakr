@@ -5,6 +5,75 @@ import BeakrNetData
 
 @Suite("Durable application Data state")
 struct DataPersistenceTests {
+    @Test("Failed admission never becomes pending or leaks into a later successful save")
+    func failedEnqueueIsNotAccepted() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("store")
+        let url = directory.appendingPathComponent("state.json")
+        let backup = root.appendingPathComponent("preserved-store")
+        let state = try await PersistentDataState.open(fileURL: url)
+        let accepted = makeEnvelope()
+        let rejected = makeEnvelope()
+        try await state.enqueue(accepted)
+
+        // Preserve the original file, then obstruct its parent with a regular file.
+        // This reliably fails writes without depending on filesystem permissions.
+        try FileManager.default.moveItem(at: directory, to: backup)
+        try Data("blocked".utf8).write(to: directory)
+        await #expect(throws: (any Error).self) { try await state.enqueue(rejected) }
+        #expect(try await state.pending() == [accepted])
+        await #expect(throws: (any Error).self) { try await state.enqueue(rejected) }
+
+        try FileManager.default.removeItem(at: directory)
+        try FileManager.default.moveItem(at: backup, to: directory)
+        let later = makeEnvelope()
+        try await state.enqueue(later)
+        let reopened = try await PersistentDataState.open(fileURL: url)
+        #expect(try await reopened.pending() == [accepted, later])
+
+        // Explicit retry after storage recovers accepts the same identity exactly once.
+        try await state.enqueue(rejected)
+        try await state.enqueue(rejected)
+        let retried = try await PersistentDataState.open(fileURL: url)
+        #expect(try await retried.pending() == [accepted, later, rejected])
+    }
+
+    @Test("Failed incoming persistence restores results, eviction order and idempotency indexes")
+    func failedIncomingWriteIsRetryable() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("store")
+        let url = directory.appendingPathComponent("state.json")
+        let backup = root.appendingPathComponent("backup")
+        let state = try await PersistentDataState.open(fileURL: url, maximumIncoming: 1)
+        let accepted = StoredDataResult(messageID: MessageID(), idempotencyKey: DataIdempotencyKey(),
+                                       response: nil, completedAt: Date(timeIntervalSince1970: 1_000))
+        let retried = StoredDataResult(messageID: MessageID(), idempotencyKey: DataIdempotencyKey(),
+                                      response: nil, completedAt: Date(timeIntervalSince1970: 1_001))
+        let acceptedKey = try #require(accepted.idempotencyKey)
+        let retriedKey = try #require(retried.idempotencyKey)
+        try await state.record(accepted)
+        try FileManager.default.moveItem(at: directory, to: backup)
+        try Data("blocked".utf8).write(to: directory)
+        for _ in 0..<2 {
+            await #expect(throws: (any Error).self) { try await state.record(retried) }
+            #expect(await state.recordedResults() == [accepted])
+            #expect(await state.result(for: acceptedKey) == accepted)
+            #expect(await state.result(for: retriedKey) == nil)
+        }
+        try FileManager.default.removeItem(at: directory)
+        try FileManager.default.moveItem(at: backup, to: directory)
+        let untouched = try await PersistentDataState.open(fileURL: url)
+        #expect(await untouched.recordedResults() == [accepted])
+        try await state.record(retried)
+        try await state.record(retried)
+        let recovered = try await PersistentDataState.open(fileURL: url, maximumIncoming: 1)
+        #expect(await recovered.recordedResults() == [retried])
+        #expect(await recovered.result(for: acceptedKey) == nil)
+        #expect(await recovered.result(for: retriedKey) == retried)
+    }
+
     @Test("Outgoing envelopes and incoming idempotency results survive restart")
     func restartRecovery() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

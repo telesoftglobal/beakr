@@ -192,4 +192,55 @@ struct NetworkInvitationTests {
         #expect(replay.statusCode == 403)
         #expect(replay.headers["x-beakr-invitation-error"] == "already-consumed")
     }
+
+    @Test("Join client returns the exact signed request accepted by the authority")
+    func clientReturnsAcceptedRequest() async throws {
+        let issuanceDate = Date()
+        let authority = CredentialAuthority()
+        let networkID = NetworkID()
+        let invitation = try authority.issueNetworkInvitation(
+            networkID: networkID,
+            environment: "production",
+            controlPlaneURL: URL(string: "https://red-blue.local:8443")!,
+            authorityCertificateDER: Data([1, 2, 3]),
+            now: issuanceDate
+        )
+        let identity = NodeIdentity()
+        let endpoint = NetworkInvitationHTTPEndpoint(
+            service: try .init(
+                authority: authority,
+                networkID: networkID,
+                environment: "production"
+            ),
+            now: { issuanceDate }
+        )
+        let transport = InvitationEndpointTransport(endpoint: endpoint)
+
+        let result = try await NetworkInvitationClient(transport: transport).joinResult(
+            invitation: invitation,
+            identity: identity
+        )
+
+        let accepted = try #require(await transport.acceptedRequest())
+        #expect(result.request == accepted)
+        #expect(result.request.nodeID == identity.nodeID)
+        #expect(result.credential.claims.nodeID == identity.nodeID)
+    }
+}
+
+private actor InvitationEndpointTransport: CertificateEnrollmentHTTPTransport {
+    let endpoint: NetworkInvitationHTTPEndpoint
+    private var accepted: NetworkJoinRequest?
+
+    init(endpoint: NetworkInvitationHTTPEndpoint) {
+        self.endpoint = endpoint
+    }
+
+    func send(_ request: CertificateEnrollmentHTTPRequest) async throws
+        -> CertificateEnrollmentHTTPResponse {
+        accepted = try NetworkJoinRequestWireCodec.decode(request.body)
+        return await endpoint.handle(request)
+    }
+
+    func acceptedRequest() -> NetworkJoinRequest? { accepted }
 }

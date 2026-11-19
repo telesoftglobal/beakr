@@ -11,7 +11,8 @@ struct BeakrNetNodeCLI {
         do {
             try await run()
         } catch {
-            let message = "BeakrNetNodeCLI: \(error)\n"
+            let failure = error as NSError
+            let message = "🔴 [FAIL] BeakrNetNodeCLI type=\(String(reflecting: type(of: error))) domain=\(failure.domain) code=\(failure.code)\n"
             FileHandle.standardError.write(Data(message.utf8))
             exit(EXIT_FAILURE)
         }
@@ -29,7 +30,7 @@ struct BeakrNetNodeCLI {
             _ = try RelayTLSConfiguration.createPreSharedKey(
                 at: URL(fileURLWithPath: arguments[1])
             )
-            print("Created a 32-byte development relay PSK")
+            print("[INFO] Created a 32-byte development relay PSK")
             return
         }
 
@@ -100,7 +101,7 @@ struct BeakrNetNodeCLI {
         )
         let transport = RelayTransport(configuration: configuration)
         try await transport.connect()
-        print("Authenticated as \(nodeID.rawValue.uuidString)")
+        print("[INFO] Authenticated as \(nodeID.rawValue.uuidString)")
 
         do {
             switch mode {
@@ -149,7 +150,7 @@ struct BeakrNetNodeCLI {
             )
             try await transport.send(envelope)
         }
-        print("Sent \(count) envelopes to \(destination.rawValue.uuidString)")
+        print("[INFO] Sent \(count) envelopes to \(destination.rawValue.uuidString)")
     }
 
     private static func receive(
@@ -164,14 +165,14 @@ struct BeakrNetNodeCLI {
             }
             guard envelope.destinationNodeID == nodeID else { continue }
             receivedSequences.append(envelope.sequenceNumber)
-            print("Received sequence \(envelope.sequenceNumber)")
+            print("[INFO] Received sequence \(envelope.sequenceNumber)")
         }
 
         let expected = (1...count).map(UInt64.init)
         guard receivedSequences == expected else {
             throw NodeCLIError.unexpectedSequence(receivedSequences)
         }
-        print("Received \(count) envelopes in order")
+        print("[INFO] Received \(count) envelopes in order")
     }
 
     private static func printUsage() {

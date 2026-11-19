@@ -4,15 +4,41 @@ import BeakrNetAuthority
 import BeakrNetCore
 import BeakrNetHost
 import BeakrNetSecurity
+import BeakrNetEnrollment
 
 nonisolated protocol ApplicationAuthorityRunning: Sendable {
     func stop() async
     func createInvitation(validity: TimeInterval) async throws -> NetworkInvitation
+    func createEnrollmentInvitation() async throws -> EnrollmentInvitation
     func renameNetwork(to displayName: String) async throws
+    func removeMember(nodeID: NodeID, reason: String) async throws
+    func pendingEnrollmentRequests() async throws -> [EnrollmentRequest]
+    func enrollmentAuditRecords() async throws -> [EnrollmentAuditRecord]
+    func signedEnrollmentAuditExport() async throws -> Data
+    func verifyEnrollmentAuditExport(_ data: Data) async throws -> EnrollmentAuditVerificationReport
+    func approveEnrollment(requestID: UUID) async throws -> EnrollmentApproval
+    func rejectEnrollment(requestID: UUID) async throws -> EnrollmentRejection
 }
 
 extension ApplicationAuthorityRunning {
     func renameNetwork(to displayName: String) async throws {}
+    func createEnrollmentInvitation() async throws -> EnrollmentInvitation {
+        throw AuthoritativeNetworkCreationError.requiresMacOS
+    }
+    func pendingEnrollmentRequests() async throws -> [EnrollmentRequest] { [] }
+    func enrollmentAuditRecords() async throws -> [EnrollmentAuditRecord] { [] }
+    func signedEnrollmentAuditExport() async throws -> Data {
+        throw AuthoritativeNetworkCreationError.requiresMacOS
+    }
+    func verifyEnrollmentAuditExport(_ data: Data) async throws -> EnrollmentAuditVerificationReport {
+        throw AuthoritativeNetworkCreationError.requiresMacOS
+    }
+    func approveEnrollment(requestID: UUID) async throws -> EnrollmentApproval {
+        throw AuthoritativeNetworkCreationError.requiresMacOS
+    }
+    func rejectEnrollment(requestID: UUID) async throws -> EnrollmentRejection {
+        throw AuthoritativeNetworkCreationError.requiresMacOS
+    }
 }
 
 #if os(macOS)
@@ -21,6 +47,12 @@ extension EmbeddedAuthorityNode: ApplicationAuthorityRunning {}
 
 struct CreatedAuthoritativeNetwork: Sendable {
     let profile: NetworkProfile
+    let configuration: DevelopmentAuthorityConfiguration
+    // Prepared but not listening; restore(profile:) performs activation.
+    let authority: any ApplicationAuthorityRunning
+}
+
+struct ResetAuthoritativeNetwork: Sendable {
     let configuration: DevelopmentAuthorityConfiguration
     let authority: any ApplicationAuthorityRunning
 }
@@ -31,11 +63,37 @@ nonisolated protocol AuthoritativeNetworkCreating: Sendable {
     func restore(profile: NetworkProfile) async throws -> (any ApplicationAuthorityRunning)?
     func owns(profile: NetworkProfile) async throws -> Bool
     func authorityCertificateDER(profile: NetworkProfile) async throws -> Data
+    func configurationForOwnedNetwork(profile: NetworkProfile) async throws -> DevelopmentAuthorityConfiguration?
+    func resetAuthority(profile: NetworkProfile) async throws -> ResetAuthoritativeNetwork
     func rename(profile: NetworkProfile, to displayName: String) async throws
     func delete(profile: NetworkProfile) async throws
 }
 
+extension AuthoritativeNetworkCreating {
+    func configurationForOwnedNetwork(profile: NetworkProfile) async throws -> DevelopmentAuthorityConfiguration? { nil }
+    func resetAuthority(profile: NetworkProfile) async throws -> ResetAuthoritativeNetwork {
+        throw AuthoritativeNetworkCreationError.requiresMacOS
+    }
+}
+
 actor SystemAuthoritativeNetworkCreator: AuthoritativeNetworkCreating {
+    /// Construct once per application lifetime; profile switches must reuse it.
+    nonisolated func makeHostingController(preferencesURL: URL) throws
+        -> PersistedAuthorityHostingController<any ApplicationAuthorityRunning> {
+        let preferences = try AuthorityHostingPreferences.open(fileURL: preferencesURL)
+        return PersistedAuthorityHostingController(
+            preferences: preferences,
+            owns: { profile in try await self.owns(profile: profile) },
+            start: { profile in
+                guard let authority = try await self.restore(profile: profile) else {
+                    throw AuthoritativeNetworkCreationError.invalidPersistedAuthority
+                }
+                return authority
+            },
+            stop: { authority in await authority.stop() }
+        )
+    }
+
     func create(displayName: String, hostname: String, port: UInt16) async throws
         -> CreatedAuthoritativeNetwork {
 #if os(macOS)
@@ -80,12 +138,12 @@ actor SystemAuthoritativeNetworkCreator: AuthoritativeNetworkCreating {
             let authority = try EmbeddedAuthorityNode(
                 bundleURL: bundleURL,
                 openSSLExecutableURL: openSSL,
-                port: port,
                 listenOnLAN: true,
                 authorityPrivateKeyRepresentation: result.authorityPrivateKeyRepresentation,
                 certificateAuthorityPrivateKeyPEM: caPrivateKey
             )
-            try await authority.start(pkcs12Password: password)
+            // Creation persists the authority but does not bind a listener.
+            // restore(profile:) starts it with an OS-selected port.
             let configuration = DevelopmentAuthorityConfiguration(
                 controlPlaneURL: controlPlaneURL,
                 networkID: result.manifest.profile.networkID,
@@ -122,6 +180,7 @@ actor SystemAuthoritativeNetworkCreator: AuthoritativeNetworkCreating {
             atPath: bundleURL.appendingPathComponent(NetworkBootstrap.manifestFilename).path
         ) else { return nil }
         let secretStore = AuthoritySecretStore(profileID: profile.id)
+        try recoverAuthorityKeyRotation(bundleURL: bundleURL, secretStore: secretStore)
         guard let passwordData = try secretStore.load(account: .tlsPassword),
               let password = String(data: passwordData, encoding: .utf8) else {
             throw AuthoritativeNetworkCreationError.missingAuthorityPassword
@@ -131,10 +190,8 @@ actor SystemAuthoritativeNetworkCreator: AuthoritativeNetworkCreating {
             throw AuthoritativeNetworkCreationError.missingAuthorityPrivateKeys
         }
         let manifest = try NetworkBootstrap.loadManifest(from: bundleURL)
-        guard manifest.profile == profile,
-              let hostname = manifest.controlPlaneURL?.host,
-              let port = manifest.controlPlaneURL?.port,
-              let authorityPort = UInt16(exactly: port) else {
+        guard Self.hasSameAuthorityIdentity(manifest.profile, profile),
+              let hostname = manifest.controlPlaneURL?.host else {
             throw AuthoritativeNetworkCreationError.invalidPersistedAuthority
         }
         if !FileManager.default.fileExists(atPath: authorityMigrationMarkerURL(bundleURL: bundleURL).path) {
@@ -150,7 +207,6 @@ actor SystemAuthoritativeNetworkCreator: AuthoritativeNetworkCreating {
         let authority = try EmbeddedAuthorityNode(
             bundleURL: bundleURL,
             openSSLExecutableURL: try openSSLExecutableURL(),
-            port: authorityPort,
             listenOnLAN: true,
             authorityPrivateKeyRepresentation: authoritySigningKey,
             certificateAuthorityPrivateKeyPEM: certificateAuthorityKey
@@ -170,11 +226,153 @@ actor SystemAuthoritativeNetworkCreator: AuthoritativeNetworkCreating {
         ) else { return false }
         let secretStore = AuthoritySecretStore(profileID: profile.id)
         guard try secretStore.hasAllSecrets() else { return false }
-        return try NetworkBootstrap.loadManifest(from: bundleURL).profile == profile
+        let manifestProfile = try NetworkBootstrap.loadManifest(from: bundleURL).profile
+        return Self.hasSameAuthorityIdentity(manifestProfile, profile)
 #else
         return false
 #endif
     }
+
+    /// A display name is mutable metadata, not part of authority ownership.
+    /// Ownership remains bound to stable profile identity and protected secrets.
+    nonisolated static func hasSameAuthorityIdentity(
+        _ manifestProfile: NetworkProfile,
+        _ registeredProfile: NetworkProfile
+    ) -> Bool {
+        manifestProfile.id == registeredProfile.id
+            && manifestProfile.networkID == registeredProfile.networkID
+            && manifestProfile.localNodeID == registeredProfile.localNodeID
+            // Millisecond JSON date encoding can lose sub-microsecond precision.
+            && abs(manifestProfile.createdAt.timeIntervalSince(registeredProfile.createdAt)) < 0.001
+    }
+
+    func configurationForOwnedNetwork(
+        profile: NetworkProfile
+    ) async throws -> DevelopmentAuthorityConfiguration? {
+#if os(macOS)
+        guard try await owns(profile: profile) else { return nil }
+        let bundleURL = try authorityBundleURL(profileID: profile.id)
+        let manifest = try NetworkBootstrap.loadManifest(from: bundleURL)
+        guard let controlPlaneURL = manifest.controlPlaneURL else {
+            throw AuthoritativeNetworkCreationError.invalidPersistedAuthority
+        }
+        return DevelopmentAuthorityConfiguration(
+            controlPlaneURL: controlPlaneURL,
+            networkID: profile.networkID,
+            authorityPublicKey: try Data(
+                contentsOf: bundleURL.appendingPathComponent(NetworkBootstrap.authorityPublicKeyFilename)
+            ),
+            authorityCertificateDER: try NetworkBootstrap.loadCertificateAuthorityDER(from: bundleURL),
+            credential: try CredentialFiles.loadCredential(
+                from: bundleURL.appendingPathComponent(NetworkBootstrap.administratorCredentialFilename)
+            )
+        )
+#else
+        return nil
+#endif
+    }
+
+    func resetAuthority(profile: NetworkProfile) async throws -> ResetAuthoritativeNetwork {
+#if os(macOS)
+        let bundleURL = try authorityBundleURL(profileID: profile.id)
+        let manifest = try NetworkBootstrap.loadManifest(from: bundleURL)
+        guard Self.hasSameAuthorityIdentity(manifest.profile, profile),
+              let controlPlaneURL = manifest.controlPlaneURL else {
+            throw AuthoritativeNetworkCreationError.invalidPersistedAuthority
+        }
+        let secretStore = AuthoritySecretStore(profileID: profile.id)
+        try recoverAuthorityKeyRotation(bundleURL: bundleURL, secretStore: secretStore)
+        guard let retiringKey = try secretStore.load(account: .authoritySigningKey),
+              let passwordData = try secretStore.load(account: .tlsPassword),
+              let password = String(data: passwordData, encoding: .utf8),
+              let certificateAuthorityKey = try secretStore.load(account: .certificateAuthorityKey) else {
+            throw AuthoritativeNetworkCreationError.missingAuthorityPrivateKeys
+        }
+        let retiringAuthority = try CredentialAuthority(privateKeyRepresentation: retiringKey)
+        let replacementAuthority = CredentialAuthority()
+        let statement = try AuthorityKeyRotationStatement.signed(
+            networkID: profile.networkID,
+            retiringAuthority: retiringAuthority,
+            replacementAuthority: replacementAuthority
+        )
+        let identity = try KeychainNodeIdentityStore(
+            namespace: ProfileKeychainNamespace(baseService: "net.beakr.app", profileID: profile.id)
+        ).loadOrCreate()
+
+        try secretStore.save(
+            replacementAuthority.privateKeyRepresentation,
+            account: .authoritySigningKeyStaged
+        )
+        do {
+            try AuthorityKeyRotationInstaller.prepare(
+                bundleURL: bundleURL,
+                statement: statement,
+                replacementAuthority: replacementAuthority,
+                administratorIdentity: identity
+            )
+        } catch {
+            try? secretStore.delete(account: .authoritySigningKeyStaged)
+            throw error
+        }
+        try recoverAuthorityKeyRotation(bundleURL: bundleURL, secretStore: secretStore)
+
+        let credential = try CredentialFiles.loadCredential(
+            from: bundleURL.appendingPathComponent(NetworkBootstrap.administratorCredentialFilename)
+        )
+        let configuration = DevelopmentAuthorityConfiguration(
+            controlPlaneURL: controlPlaneURL,
+            networkID: profile.networkID,
+            authorityPublicKey: replacementAuthority.publicKeyRepresentation,
+            authorityCertificateDER: try NetworkBootstrap.loadCertificateAuthorityDER(from: bundleURL),
+            credential: credential
+        )
+        let authority = try EmbeddedAuthorityNode(
+            bundleURL: bundleURL,
+            openSSLExecutableURL: try openSSLExecutableURL(),
+            listenOnLAN: true,
+            authorityPrivateKeyRepresentation: replacementAuthority.privateKeyRepresentation,
+            certificateAuthorityPrivateKeyPEM: certificateAuthorityKey
+        )
+        try await authority.start(pkcs12Password: password)
+        return ResetAuthoritativeNetwork(configuration: configuration, authority: authority)
+#else
+        throw AuthoritativeNetworkCreationError.requiresMacOS
+#endif
+    }
+
+#if os(macOS)
+    private func recoverAuthorityKeyRotation(
+        bundleURL: URL,
+        secretStore: AuthoritySecretStore
+    ) throws {
+        switch try AuthorityKeyRotationInstaller.recover(bundleURL: bundleURL) {
+        case .none:
+            if try secretStore.load(account: .authoritySigningKeyStaged) != nil {
+                try secretStore.delete(account: .authoritySigningKeyStaged)
+            }
+            return
+        case .commitMetadata:
+            return
+        case .activateStagedPrivateKey(let replacementAuthorityID):
+            guard let currentData = try secretStore.load(account: .authoritySigningKey),
+                  let stagedData = try secretStore.load(account: .authoritySigningKeyStaged) else {
+                throw AuthoritativeNetworkCreationError.missingAuthorityPrivateKeys
+            }
+            let current = try CredentialAuthority(privateKeyRepresentation: currentData)
+            let staged = try CredentialAuthority(privateKeyRepresentation: stagedData)
+            guard staged.authorityID == replacementAuthorityID else {
+                throw AuthoritativeNetworkCreationError.invalidPersistedAuthority
+            }
+            if current.authorityID != replacementAuthorityID {
+                try secretStore.save(currentData, account: .authoritySigningKeyPrevious)
+                try secretStore.save(stagedData, account: .authoritySigningKey)
+            }
+            try AuthorityKeyRotationInstaller.markKeyActivated(bundleURL: bundleURL)
+            _ = try AuthorityKeyRotationInstaller.recover(bundleURL: bundleURL)
+            try secretStore.delete(account: .authoritySigningKeyStaged)
+        }
+    }
+#endif
 
     func rename(profile: NetworkProfile, to displayName: String) async throws {
 #if os(macOS)
@@ -398,16 +596,26 @@ private struct AuthoritySecretStore {
         case tlsPassword = "tls-password"
         case authoritySigningKey = "authority-signing-key"
         case certificateAuthorityKey = "certificate-authority-key"
+        case authoritySigningKeyStaged = "authority-signing-key-staged"
+        case authoritySigningKeyPrevious = "authority-signing-key-previous"
     }
 
     let profileID: NetworkProfileID
 
     func save(_ data: Data, account: Account) throws {
-        try delete(account: account)
-        var query = baseQuery(account: account)
-        query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(query as CFDictionary, nil)
+        let query = baseQuery(account: account)
+        let updateStatus = SecItemUpdate(
+            query as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            throw AuthoritativeNetworkCreationError.keychain(updateStatus)
+        }
+        var addition = query
+        addition[kSecValueData as String] = data
+        addition[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let status = SecItemAdd(addition as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw AuthoritativeNetworkCreationError.keychain(status)
         }
@@ -434,13 +642,14 @@ private struct AuthoritySecretStore {
     }
 
     func hasAllSecrets() throws -> Bool {
-        for account in Account.allCases where try load(account: account) == nil {
+        let required: [Account] = [.tlsPassword, .authoritySigningKey, .certificateAuthorityKey]
+        for account in required where try load(account: account) == nil {
             return false
         }
         return true
     }
 
-    private func delete(account: Account) throws {
+    func delete(account: Account) throws {
         let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw AuthoritativeNetworkCreationError.keychain(status)

@@ -12,7 +12,7 @@ import BeakrNetSecurity
     .serialized
 )
 struct AuthorityHTTPSServerIntegrationTests {
-    @Test("Real TLS delivers enrollment, membership, and revocation state")
+    @Test("Real TLS authority requests recover after loopback delay and connection interruption", .timeLimit(.minutes(3)))
     func realTLSControlPlane() async throws {
         let environment = ProcessInfo.processInfo.environment
         let serverURL = try #require(environment["BEAKRNET_AUTHORITY_SERVER_EXECUTABLE"])
@@ -128,6 +128,77 @@ struct AuthorityHTTPSServerIntegrationTests {
         let revocations = try await RevocationSnapshotNetworkClient(transport: transport)
             .fetchSnapshot(after: nil)
         #expect(revocations?.claims.revocations.isEmpty == true)
+
+        // Forward encrypted TCP bytes only. The client still validates the real
+        // authority certificate; the proxy never terminates or weakens TLS.
+        let modeFile = root.appendingPathComponent("proxy-mode")
+        let portFile = root.appendingPathComponent("proxy-port")
+        let eventFile = root.appendingPathComponent("proxy-events")
+        let scriptFile = root.appendingPathComponent("proxy.py")
+        try Data("baseline".utf8).write(to: modeFile, options: .atomic)
+        try Data(loopbackProxyScript.utf8).write(to: scriptFile)
+        let proxy = Process()
+        proxy.executableURL = URL(fileURLWithPath: environment["BEAKRNET_TEST_PYTHON"] ?? "/usr/bin/python3")
+        proxy.arguments = [scriptFile.path, String(port), modeFile.path, portFile.path, eventFile.path]
+        proxy.standardOutput = FileHandle.nullDevice
+        proxy.standardError = FileHandle.nullDevice
+        try proxy.run()
+        defer { terminate(proxy) }
+        var proxyPort: Int?
+        for _ in 0..<50 {
+            if let text = try? String(contentsOf: portFile, encoding: .utf8), let value = Int(text) {
+                proxyPort = value
+                break
+            }
+            guard proxy.isRunning else { throw AuthorityHTTPSIntegrationError.serverNotReady }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let listeningPort = try #require(proxyPort)
+        let proxyURL = try #require(URL(string: "https://authority.test:\(listeningPort)"))
+        let proxyTransport = CurlAuthorityTransport(
+            baseURL: proxyURL,
+            caCertificate: caCertificate, directory: root
+        )
+        let membershipClient = ProfileMembershipNetworkClient(transport: proxyTransport)
+        let baseline = try #require(try await membershipClient.fetchSnapshot(after: nil))
+        try ProfileMembershipVerifier.verify(baseline, networkID: networkID, environment: "test",
+                                             trustedAuthorityPublicKey: authority.publicKeyRepresentation,
+                                             revokedCredentialIDs: [])
+        #expect(baseline == membership)
+
+        try Data("delay".utf8).write(to: modeFile, options: .atomic)
+        let clock = ContinuousClock()
+        let start = clock.now
+        let delayed = try await membershipClient.fetchSnapshot(after: nil)
+        let elapsed = start.duration(to: clock.now)
+        #expect(elapsed >= .milliseconds(250))
+        #expect(delayed == baseline)
+        print("E11 TLS loopback: configured initial client-byte delay=250ms, request elapsed=\(elapsed)")
+
+        try Data("interrupt".utf8).write(to: modeFile, options: .atomic)
+        do {
+            _ = try await membershipClient.fetchSnapshot(after: nil)
+            Issue.record("Interrupted TLS connection must not return membership")
+        } catch AuthorityHTTPSIntegrationError.commandFailed {
+            // curl must fail: this cut occurs on the first server TLS bytes,
+            // before an authenticated HTTP response can be received.
+        }
+        try Data("baseline".utf8).write(to: modeFile, options: .atomic)
+        let recovered = try #require(try await membershipClient.fetchSnapshot(after: nil))
+        #expect(recovered == baseline)
+        try ProfileMembershipVerifier.verify(recovered, networkID: networkID, environment: "test",
+                                             trustedAuthorityPublicKey: authority.publicKeyRepresentation,
+                                             revokedCredentialIDs: [])
+        let recoveredRevocations = try #require(try await RevocationSnapshotNetworkClient(transport: proxyTransport)
+            .fetchSnapshot(after: nil))
+        #expect(recoveredRevocations == revocations)
+        _ = try RevocationVerifier.verify(recoveredRevocations, trustedAuthorityPublicKey: authority.publicKeyRepresentation)
+        let events = try String(contentsOf: eventFile, encoding: .utf8).split(separator: "\n").map(String.init)
+        #expect(events.filter { $0 == "accepted:baseline" }.count == 3)
+        #expect(events.filter { $0 == "accepted:delay" }.count == 1)
+        #expect(events.filter { $0 == "accepted:interrupt" }.count == 1)
+        #expect(events.filter { $0 == "cut:server-tls-bytes" }.count == 1)
+        print("E11 TLS loopback: five client connections, one deliberate TLS interruption, signed state recovered")
     }
 
     private func waitUntilReady(_ transport: CurlAuthorityTransport) async throws {
@@ -141,7 +212,7 @@ struct AuthorityHTTPSServerIntegrationTests {
     }
 }
 
-private actor CurlAuthorityTransport: CertificateEnrollmentHTTPTransport {
+actor CurlAuthorityTransport: CertificateEnrollmentHTTPTransport {
     let baseURL: URL
     let caCertificate: URL
     let directory: URL
@@ -234,4 +305,61 @@ private enum AuthorityHTTPSIntegrationError: Error {
     case invalidResponse
     case commandFailed(String)
 }
+
+// Python is test infrastructure only; no system packet filters or live LAN ports.
+private let loopbackProxyScript = #"""
+import pathlib, select, socket, sys, threading, time
+upstream_port = int(sys.argv[1])
+mode_file, port_file, event_file = map(pathlib.Path, sys.argv[2:])
+lock = threading.Lock()
+def record(event):
+    with lock:
+        with event_file.open("a") as output:
+            output.write(event + "\n")
+def forward(client, mode):
+    upstream = None
+    try:
+        client.settimeout(1)
+        upstream = socket.create_connection(("127.0.0.1", upstream_port), timeout=1)
+        first_client_bytes = True
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select([client, upstream], [], [], 0.2)
+            for source in readable:
+                data = source.recv(65536)
+                if not data:
+                    return
+                if source is upstream and mode == "interrupt":
+                    record("cut:server-tls-bytes")
+                    return
+                if source is client and first_client_bytes:
+                    first_client_bytes = False
+                    if mode == "delay":
+                        time.sleep(0.250)
+                target = upstream if source is client else client
+                target.sendall(data)
+    except OSError:
+        pass
+    finally:
+        client.close()
+        if upstream is not None:
+            upstream.close()
+listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+listener.bind(("127.0.0.1", 0))
+listener.listen(8)
+listener.settimeout(0.2)
+port_file.write_text(str(listener.getsockname()[1]))
+deadline = time.monotonic() + 60
+try:
+    while time.monotonic() < deadline:
+        try:
+            client, _ = listener.accept()
+        except socket.timeout:
+            continue
+        mode = mode_file.read_text()
+        record("accepted:" + mode)
+        threading.Thread(target=forward, args=(client, mode), daemon=True).start()
+finally:
+    listener.close()
+"""#
 #endif

@@ -2,11 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Beakr needs Precise Location permission to show the name of your connected Wi-Fi network, helping you identify which network this device is using. Beakr does not request or store location coordinates.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Beakr uses your local network to discover and communicate securely with nearby Beakr devices.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_beakrnet._tcp</string>
+		<string>_beakr-auth._tcp</string>
 	</array>
 </dict>
 </plist>

@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+source "$(cd "$(dirname "$0")" && pwd)/console-diagnostics.sh"
+trap 'beakr_script_failure "$?" "$LINENO"' ERR
+
 repository_root="$(cd "$(dirname "$0")/.." && pwd)"
 fixture_directory="$(mktemp -d "${TMPDIR:-/tmp}/beakrnet-mtls-run.XXXXXX")"
 destination="${1:-platform=macOS}"
@@ -52,7 +55,7 @@ File.write(path, JSON.pretty_generate(plan) + "\n")
 ' "${test_plan_path}"
 
 cd "${repository_root}"
-echo "Using $(xcodebuild -version | head -n 1) from ${DEVELOPER_DIR}"
+beakr_log INFO "Running signed mutual-TLS tests for ${destination} using ${DEVELOPER_DIR}"
 xcodebuild test \
     -project Apps/BeakrNetIntegrationHost.xcodeproj \
     -scheme BeakrNetIntegrationHost \
@@ -62,3 +65,5 @@ xcodebuild test \
     -clonedSourcePackagesDirPath "${fixture_directory}/SourcePackages" \
     -packageCachePath "${fixture_directory}/PackageCache" \
     -only-testing:BeakrNetIntegrationTests
+
+beakr_log PASS "Signed mutual-TLS test command completed successfully for ${destination}. Review the test report for skips."

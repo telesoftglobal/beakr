@@ -53,6 +53,51 @@ struct ProfileMembershipRefreshTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.fileURL.path))
     }
 
+    @Test("A prolonged outage caps retries and recovery resets the failure count")
+    func prolongedOutageRecovers() async throws {
+        let fixture = try await makeFixture(results:
+            Array(repeating: .failure(MembershipRefreshTestError.offline), count: 8)
+            + [.success(nil), .failure(MembershipRefreshTestError.offline)]
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.fileURL.deletingLastPathComponent()) }
+        for delay in [5.0, 10, 20, 20, 20, 20, 20, 20] {
+            #expect(await fixture.controller.refreshNow(trigger: .scheduled).retryDate == now.addingTimeInterval(delay))
+        }
+        #expect(await fixture.controller.refreshNow(trigger: .scheduled) == .unchanged(
+            nextAttemptAt: now.addingTimeInterval(60)
+        ))
+        #expect(await fixture.controller.refreshNow(trigger: .scheduled).retryDate == now.addingTimeInterval(5))
+    }
+
+    @Test("Bad signatures after an outage cannot replace previously verified persisted membership")
+    func invalidRefreshPreservesCache() async throws {
+        let fixture = try await makeFixture(results: [.success(nil)])
+        defer { try? FileManager.default.removeItem(at: fixture.fileURL.deletingLastPathComponent()) }
+        await fixture.requester.replaceFirst(with: .success(fixture.snapshot))
+        _ = await fixture.controller.refreshNow(trigger: .startup)
+        let persisted = try Data(contentsOf: fixture.fileURL)
+        let invalid = try ProfileMembershipAuthority(
+            privateKeyRepresentation: CredentialAuthority().privateKeyRepresentation
+        ).sign(fixture.snapshot.claims)
+        await fixture.requester.append(.failure(MembershipRefreshTestError.offline))
+        await fixture.requester.append(.success(invalid))
+        await fixture.requester.append(.success(fixture.snapshot))
+        for _ in 0..<2 {
+            guard case .failed = await fixture.controller.refreshNow(trigger: .scheduled) else {
+                Issue.record("Unverified/offline refresh must fail")
+                return
+            }
+            #expect(await fixture.directory.generation() == 1)
+            #expect(try Data(contentsOf: fixture.fileURL) == persisted)
+        }
+        // A subsequent valid response still recovers without clearing local trust.
+        guard case .activated = await fixture.controller.refreshNow(trigger: .scheduled) else {
+            Issue.record("Verified membership must recover after invalid responses")
+            return
+        }
+        #expect(await fixture.directory.generation() == 1)
+    }
+
     private func makeFixture(
         results: [Result<ProfileMembershipSnapshot?, Error>]
     ) async throws -> MembershipRefreshFixture {
@@ -106,6 +151,7 @@ private struct MembershipRefreshFixture {
 private actor MembershipSequenceRequester: ProfileMembershipSnapshotRequesting {
     private var results: [Result<ProfileMembershipSnapshot?, Error>]
     init(results: [Result<ProfileMembershipSnapshot?, Error>]) { self.results = results }
+    func append(_ result: Result<ProfileMembershipSnapshot?, Error>) { results.append(result) }
     func replaceFirst(with result: Result<ProfileMembershipSnapshot?, Error>) {
         results[0] = result
     }

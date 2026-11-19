@@ -29,6 +29,10 @@ public struct CredentialAuthority: Sendable {
         try privateKey.signature(for: transcript).derRepresentation
     }
 
+    func signature(forAuthorityEndpoint transcript: Data) throws -> Data {
+        try privateKey.signature(for: transcript).derRepresentation
+    }
+
     public func issue(
         nodeID: NodeID,
         nodePublicKey: Data,

@@ -6,6 +6,8 @@ public enum ControlMessageType: String, CaseIterable, Codable, Sendable {
     case sessionLiveness = "beakrnet.session-liveness"
     case queuePressure = "beakrnet.queue-pressure"
     case synchronizationHint = "beakrnet.synchronization-hint"
+    case peerLifecycle = "beakrnet.peer-lifecycle"
+    case peerNetworkInfo = "beakrnet.peer-network-info"
     case protocolError = "beakrnet.protocol-error"
 }
 
@@ -81,6 +83,46 @@ public struct SynchronizationHint: Codable, Equatable, Sendable {
     }
 }
 
+public enum PeerLifecycleState: String, Codable, Sendable { case suspending }
+
+public enum PeerLifecycleReason: String, Codable, Sendable {
+    case applicationBackgrounded
+    case applicationTerminating
+    case networkTransition
+    case profileSwitch
+    case runtimeStopping
+}
+
+public struct PeerLifecycleNotice: Codable, Equatable, Sendable {
+    public let state: PeerLifecycleState
+    public let reason: PeerLifecycleReason
+
+    public init(state: PeerLifecycleState = .suspending, reason: PeerLifecycleReason) {
+        self.state = state
+        self.reason = reason
+    }
+}
+
+/// A peer-reported display address, never an authorization or routing input.
+public struct PeerNetworkInfo: Codable, Equatable, Sendable {
+    public let ipv4Address: String?
+
+    public init(ipv4Address: String?) {
+        self.ipv4Address = ipv4Address
+    }
+
+    public static func isValidIPv4(_ value: String) -> Bool {
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        return parts.allSatisfy { part in
+            guard !part.isEmpty, part.count <= 3,
+                  part.utf8.allSatisfy({ (48...57).contains($0) }),
+                  let number = UInt8(part) else { return false }
+            return String(number) == part
+        } && value != "0.0.0.0" && value != "255.255.255.255"
+    }
+}
+
 public enum ControlProtocolErrorCode: String, Codable, Sendable {
     case malformed
     case unsupportedMessage
@@ -105,12 +147,15 @@ public enum ControlMessage: Equatable, Sendable {
     case sessionLiveness(ControlHeader, SessionLiveness)
     case queuePressure(ControlHeader, QueuePressure)
     case synchronizationHint(ControlHeader, SynchronizationHint)
+    case peerLifecycle(ControlHeader, PeerLifecycleNotice)
+    case peerNetworkInfo(ControlHeader, PeerNetworkInfo)
     case protocolError(ControlHeader, ControlProtocolError)
 
     public var header: ControlHeader {
         switch self {
         case .deliveryAcknowledgement(let header, _), .sessionLiveness(let header, _),
              .queuePressure(let header, _), .synchronizationHint(let header, _),
+             .peerLifecycle(let header, _), .peerNetworkInfo(let header, _),
              .protocolError(let header, _): header
         }
     }
@@ -166,6 +211,10 @@ public struct ControlCodec: Sendable {
         case .synchronizationHint(let h, let body):
             if let cursor = body.cursor, cursor.utf8.count > Self.maximumCursorBytes { throw ControlCodecError.invalidValue }
             data = try encode(h, body)
+        case .peerNetworkInfo(let h, let body):
+            guard body.ipv4Address.map(PeerNetworkInfo.isValidIPv4) ?? true else { throw ControlCodecError.invalidValue }
+            data = try encode(h, body)
+        case .peerLifecycle(let h, let body): data = try encode(h, body)
         case .protocolError(let h, let body): data = try encode(h, body)
         }
         guard data.count <= Self.maximumPayloadBytes else {
@@ -208,6 +257,13 @@ public struct ControlCodec: Sendable {
                 let wire: WirePayload<SynchronizationHint> = try decode(envelope.payload)
                 guard wire.body.cursor.map({ $0.utf8.count <= Self.maximumCursorBytes }) ?? true else { throw ControlCodecError.invalidValue }
                 message = .synchronizationHint(makeHeader(wire, type), wire.body)
+            case .peerNetworkInfo:
+                let wire: WirePayload<PeerNetworkInfo> = try decode(envelope.payload)
+                guard wire.body.ipv4Address.map(PeerNetworkInfo.isValidIPv4) ?? true else { throw ControlCodecError.invalidValue }
+                message = .peerNetworkInfo(makeHeader(wire, type), wire.body)
+            case .peerLifecycle:
+                let wire: WirePayload<PeerLifecycleNotice> = try decode(envelope.payload)
+                message = .peerLifecycle(makeHeader(wire, type), wire.body)
             case .protocolError:
                 let wire: WirePayload<ControlProtocolError> = try decode(envelope.payload)
                 message = .protocolError(makeHeader(wire, type), wire.body)

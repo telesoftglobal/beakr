@@ -1,9 +1,22 @@
 import Foundation
+import Darwin
 import BeakrNetCore
 
 @main
 struct BeakrNetHandoffLab {
-    static func main() async throws {
+    static func main() async {
+        do {
+            try await run()
+        } catch {
+            // Do not echo command arguments, credentials, or error userInfo.
+            let failure = error as NSError
+            let message = "🔴 [FAIL] BeakrNetHandoffLab type=\(String(reflecting: type(of: error))) domain=\(failure.domain) code=\(failure.code)\n"
+            FileHandle.standardError.write(Data(message.utf8))
+            exit(EXIT_FAILURE)
+        }
+    }
+
+    private static func run() async throws {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let nodeA = NodeID()
         let nodeB = NodeID()
@@ -69,7 +82,7 @@ struct BeakrNetHandoffLab {
               ) else {
             throw LabError.verificationFailed("initial relay delivery")
         }
-        print("Route active: relay")
+        print("[INFO] Route active: relay")
 
         let lanGeneration = await registerReady(
             lan,
@@ -77,7 +90,7 @@ struct BeakrNetHandoffLab {
             driver: driver,
             requiresAuthentication: true
         )
-        print("Route changed: relay → authenticated LAN")
+        print("[INFO] Route changed: relay → authenticated LAN")
 
         let expiresAt = now.addingTimeInterval(120)
         let handoffEnvelope = makeEnvelope(
@@ -95,8 +108,8 @@ struct BeakrNetHandoffLab {
               attemptCount == 2 else {
             throw LabError.verificationFailed("relay fallback")
         }
-        print("LAN write completed but result was ambiguous")
-        print("Route changed: authenticated LAN → relay")
+        print("[RETRY] LAN write completed but result was ambiguous")
+        print("[RECOVERED] Route changed: authenticated LAN → relay")
 
         guard let fallbackAcknowledgement = await relay.latestAcknowledgement,
               await driver.acknowledge(
@@ -141,12 +154,12 @@ struct BeakrNetHandoffLab {
         }
         try persistence.removeArtifacts()
 
-        print("Application acceptances for retried Message ID: 1")
-        print("Duplicate retries acknowledged: 1")
-        print("Pending deliveries: 0")
-        print("Relay persistence unchanged: true")
-        print("Session, Message ID, channel metadata, and expiry preserved")
-        print("Authenticated LAN handoff verified")
+        print("[INFO] Application acceptances for retried Message ID: 1")
+        print("[INFO] Duplicate retries acknowledged: 1")
+        print("[INFO] Pending deliveries: 0")
+        print("[INFO] Relay persistence unchanged: true")
+        print("[INFO] Session, Message ID, channel metadata, and expiry preserved")
+        print("[PASS] Authenticated LAN handoff verified")
     }
 
     private static func registerReady(

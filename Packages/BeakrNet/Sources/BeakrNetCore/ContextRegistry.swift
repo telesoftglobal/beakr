@@ -1,5 +1,9 @@
 import Foundation
 
+public enum ContextArchiveReason: String, Codable, Sendable {
+    case membershipRevoked
+}
+
 public struct ContextRecord: Codable, Equatable, Sendable {
     public let id: ContextID
     public let displayName: String
@@ -8,6 +12,7 @@ public struct ContextRecord: Codable, Equatable, Sendable {
     public let messageStoreID: StoreID
     public let createdAt: Date
     public let updatedAt: Date
+    public let archiveReason: ContextArchiveReason?
 
     public init(
         id: ContextID = ContextID(),
@@ -16,7 +21,8 @@ public struct ContextRecord: Codable, Equatable, Sendable {
         attachedProfileIDs: [NetworkProfileID],
         messageStoreID: StoreID = StoreID(),
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        archiveReason: ContextArchiveReason? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -25,6 +31,7 @@ public struct ContextRecord: Codable, Equatable, Sendable {
         self.messageStoreID = messageStoreID
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.archiveReason = archiveReason
     }
 }
 
@@ -162,7 +169,11 @@ public actor PersistentContextRegistry {
         return context
     }
 
-    public func detach(_ profileID: NetworkProfileID, now: Date = Date()) throws {
+    public func detach(
+        _ profileID: NetworkProfileID,
+        now: Date = Date(),
+        reason: ContextArchiveReason? = nil
+    ) throws {
         guard let existing = context(profileID: profileID) else { return }
         let updated = ContextRecord(
             id: existing.id,
@@ -171,7 +182,8 @@ public actor PersistentContextRegistry {
             attachedProfileIDs: existing.attachedProfileIDs.filter { $0 != profileID },
             messageStoreID: existing.messageStoreID,
             createdAt: existing.createdAt,
-            updatedAt: now
+            updatedAt: now,
+            archiveReason: existing.attachedProfileIDs == [profileID] ? reason : nil
         )
         contextsByID[existing.id] = updated
         do { try persist() }

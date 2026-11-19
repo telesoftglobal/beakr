@@ -9,6 +9,17 @@ public enum ProfileMembershipDirectoryError: Error, Equatable, Sendable {
     case generationConflict
 }
 
+/// One actor-isolated observation of verified membership and current eligibility.
+/// Records alone are historical authority evidence; only eligibleSessions authorizes use.
+public struct ProfileServiceAuthorizationSnapshot: Sendable {
+    public let networkID: NetworkID
+    public let authorityPublicKey: Data
+    public let environment: String
+    public let records: [NodeID: ProfileMembershipRecord]
+    public let eligibleSessions: [NodeID: SessionID]
+    public let invalidatedCredentialIDs: Set<UUID>
+}
+
 public actor ProfileMembershipDirectory {
     public let fileURL: URL
     public let networkID: NetworkID
@@ -22,6 +33,7 @@ public actor ProfileMembershipDirectory {
     private var snapshot: ProfileMembershipSnapshot?
     private var recordsByCertificateKey: [Data: ProfileMembershipRecord] = [:]
     private var recordsByNodeID: [NodeID: ProfileMembershipRecord] = [:]
+    private var removedCredentialIDs: Set<UUID> = []
 
     private init(
         fileURL: URL,
@@ -112,6 +124,10 @@ public actor ProfileMembershipDirectory {
             withIntermediateDirectories: true
         )
         try data.write(to: fileURL, options: .atomic)
+        let nextCredentials = Set(proposed.claims.records.map { $0.credential.claims.credentialID })
+        removedCredentialIDs.formUnion(recordsByNodeID.values.map { $0.credential.claims.credentialID }.filter {
+            !nextCredentials.contains($0)
+        })
         snapshot = proposed
         recordsByCertificateKey = Dictionary(
             uniqueKeysWithValues: proposed.claims.records.map {
@@ -159,10 +175,12 @@ public actor ProfileMembershipDirectory {
     /// canonical ordering makes the lower node ID initiate the connection, so
     /// both endpoints use the higher node ID's authority-issued session ID.
     public func connectionSessionID(localNodeID: NodeID, peerNodeID: NodeID) -> SessionID? {
-        let sessionOwner = localNodeID.rawValue.uuidString < peerNodeID.rawValue.uuidString
-            ? peerNodeID
-            : localNodeID
-        return sessionID(for: sessionOwner)
+        // Canonical session ownership does not establish the other endpoint's eligibility.
+        guard let localSession = sessionID(for: localNodeID),
+              let peerSession = sessionID(for: peerNodeID) else { return nil }
+        return localNodeID.rawValue.uuidString < peerNodeID.rawValue.uuidString
+            ? peerSession
+            : localSession
     }
 
     /// Returns only currently valid, non-revoked members from the signed snapshot.
@@ -172,13 +190,34 @@ public actor ProfileMembershipDirectory {
             .sorted { $0.rawValue.uuidString < $1.rawValue.uuidString }
     }
 
-    public nonisolated func acceptedPeerResolver() -> ProfileAcceptedPeerResolver {
+    public nonisolated func acceptedPeerResolver(
+        refreshUnknownPeer: @escaping @Sendable () async -> Void = {}
+    ) -> ProfileAcceptedPeerResolver {
         { [weak self] connection in
             guard let key = try? connection.peerCertificate().publicKeyRepresentation else {
                 return nil
             }
+            if let peer = await self?.resolve(certificatePublicKey: key) { return peer }
+            await refreshUnknownPeer()
+            guard !Task.isCancelled else { return nil }
             return await self?.resolve(certificatePublicKey: key)
         }
+    }
+
+    /// Identifiers from the verified snapshot, for matching revocation evidence in presentation.
+    public func memberCredentialIDs() -> [NodeID: UUID] {
+        recordsByNodeID.mapValues { $0.credential.claims.credentialID }
+    }
+
+    public func serviceAuthorizationSnapshot() -> ProfileServiceAuthorizationSnapshot? {
+        guard snapshot != nil else { return nil }
+        var sessions: [NodeID: SessionID] = [:]
+        for node in recordsByNodeID.keys { sessions[node] = sessionID(for: node) }
+        return ProfileServiceAuthorizationSnapshot(
+            networkID: networkID, authorityPublicKey: trustedAuthorityPublicKey,
+            environment: environment, records: recordsByNodeID, eligibleSessions: sessions,
+            invalidatedCredentialIDs: revokedCredentialIDs.union(removedCredentialIDs)
+        )
     }
 
     public func generation() -> UInt64? { snapshot?.claims.generation }

@@ -82,7 +82,15 @@ public actor PersistentDataState {
         guard outgoing.count < maximumOutgoing else { throw DataPersistenceError.capacityExceeded }
         outgoing[envelope.messageID] = envelope
         outgoingOrder.append(envelope.messageID)
-        try persist()
+        do {
+            try persist()
+        } catch {
+            // A rejected admission must not become retryable or leak into a later save.
+            // This synchronous actor-isolated mutation cannot interleave with other work.
+            outgoing.removeValue(forKey: envelope.messageID)
+            outgoingOrder.removeLast()
+            throw error
+        }
     }
 
     public func pending(now: Date = Date()) throws -> [BeakrNetEnvelope] {
@@ -127,6 +135,9 @@ public actor PersistentDataState {
             guard existing == result else { throw DataPersistenceError.capacityExceeded }
             return
         }
+        let previousIncoming = incoming
+        let previousOrder = incomingOrder
+        let previousIdempotencyResults = idempotencyResults
         if incomingOrder.count >= maximumIncoming, let oldest = incomingOrder.first {
             incomingOrder.removeFirst()
             if let removed = incoming.removeValue(forKey: oldest), let key = removed.idempotencyKey {
@@ -136,7 +147,14 @@ public actor PersistentDataState {
         incoming[result.messageID] = result
         incomingOrder.append(result.messageID)
         if let key = result.idempotencyKey { idempotencyResults[key] = result }
-        try persist()
+        do {
+            try persist()
+        } catch {
+            incoming = previousIncoming
+            incomingOrder = previousOrder
+            idempotencyResults = previousIdempotencyResults
+            throw error
+        }
     }
 
     private func restore(now: Date) throws {

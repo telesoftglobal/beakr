@@ -30,6 +30,8 @@ public struct AppleProfileLANRuntimeFactory {
         displayName: String? = nil,
         sessionID: @escaping @Sendable (NodeID) async -> SessionID?,
         acceptedPeer: @escaping ProfileAcceptedPeerResolver,
+        tlsHealthSink: @escaping @Sendable (BonjourEndpointID, Bool) -> Void = { _, _ in },
+        tlsDiagnosticSink: @escaping @Sendable (String) -> Void = { _ in },
         bonjourDiagnosticSink: @escaping BonjourDiagnosticSink = { _ in },
         transportDiagnosticSink: @escaping LANTransportDiagnosticSink = { _ in },
         runtimeDiagnosticSink: @escaping @Sendable (ProfileBonjourRuntimeDiagnostic) -> Void = { _ in }
@@ -68,15 +70,13 @@ public struct AppleProfileLANRuntimeFactory {
         let trustPolicy = LANTLSTrustPolicy.production(
             authorityCertificates: tlsIdentity.certificateChain
         )
-        let initiatorParameters = try LANTLSConfiguration.parameters(
-            localIdentity: tlsIdentity.identity,
-            role: .initiator,
-            trustPolicy: trustPolicy
-        )
         let acceptorParameters = try LANTLSConfiguration.parameters(
             localIdentity: tlsIdentity.identity,
             role: .acceptor,
-            trustPolicy: trustPolicy
+            trustPolicy: trustPolicy,
+            diagnosticSink: { reason in
+                tlsDiagnosticSink("profile=\(profile.id.rawValue) network=\(profile.networkID.rawValue) localNode=\(profile.localNodeID.rawValue) \(reason)")
+            }
         )
         let endpoints = NetworkBonjourEndpointRegistry()
         let browser = NetworkBonjourBrowser(
@@ -86,13 +86,24 @@ public struct AppleProfileLANRuntimeFactory {
         )
         let connectionFactory = NetworkBonjourConnectionFactory(
             registry: endpoints,
-            parameters: { initiatorParameters }
+            contextualParameters: { connectionID, endpointID, endpoint in
+                let context = "profile=\(profile.id.rawValue) network=\(profile.networkID.rawValue) localNode=\(profile.localNodeID.rawValue) connection=\(connectionID) endpointID=\(endpointID.rawValue) endpoint=\(endpoint)"
+                tlsDiagnosticSink("tls-connection-attempt \(context)")
+                return try LANTLSConfiguration.parameters(
+                    localIdentity: tlsIdentity.identity,
+                    role: .initiator,
+                    trustPolicy: trustPolicy,
+                    diagnosticSink: { reason in tlsDiagnosticSink("\(context) \(reason)") },
+                    verificationResult: { trusted in tlsHealthSink(endpointID, trusted) }
+                )
+            }
         )
         let listener = try NetworkBonjourListener(
             parameters: acceptorParameters,
             serviceType: serviceType,
             domain: domain,
             metadata: BonjourDiscoveryMetadata(
+                networkID: profile.networkID,
                 nodeIDHint: profile.localNodeID,
                 advertisementNonce: advertisementNonce,
                 displayName: displayName
@@ -122,6 +133,7 @@ public struct AppleProfileLANRuntimeFactory {
         )
         return ProfileBonjourRuntimeService.make(
             localNodeID: profile.localNodeID,
+            networkID: profile.networkID,
             localAdvertisementNonce: advertisementNonce,
             browser: browser,
             connectionFactory: connectionFactory,

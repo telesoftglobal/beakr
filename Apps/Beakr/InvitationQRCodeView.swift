@@ -2,12 +2,21 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import SwiftUI
 import BeakrNetAuthority
+import BeakrNetEnrollment
 
 struct InvitationMetadata: Equatable, Sendable {
     let issuedAt: Date
     let expiresAt: Date
 
     init?(invitation: String) {
+        if let decoded = try? EnrollmentWireCodec.decode(
+            EnrollmentInvitation.self,
+            from: Data(invitation.utf8)
+        ) {
+            issuedAt = Date(timeIntervalSince1970: Double(decoded.issuedAtMilliseconds) / 1_000)
+            expiresAt = Date(timeIntervalSince1970: Double(decoded.expiresAtMilliseconds) / 1_000)
+            return
+        }
         guard let decoded = try? NetworkInvitationWireCodec.decode(Data(invitation.utf8)) else {
             return nil
         }
@@ -30,18 +39,33 @@ struct InvitationMetadata: Equatable, Sendable {
 
 struct InvitationQRCodeView: View {
     let invitation: String
+    var regenerate: (() -> Void)?
+
+    @State private var renderedInvitation: String?
+    @State private var image: Image?
+
+    init(invitation: String, regenerate: (() -> Void)? = nil) {
+        self.invitation = invitation
+        self.regenerate = regenerate
+    }
 
     var body: some View {
         if let metadata = InvitationMetadata(invitation: invitation) {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 VStack(spacing: 12) {
+                    InvitationLifetimeView(
+                        metadata: metadata,
+                        now: context.date,
+                        regenerate: regenerate
+                    )
+
                     if metadata.isExpired(at: context.date) {
                         ContentUnavailableView(
                             "Invitation Expired",
                             systemImage: "timer",
                             description: Text("Generate a new invitation to continue.")
                         )
-                    } else if let image {
+                    } else if renderedInvitation == invitation, let image {
                         image
                             .interpolation(.none)
                             .resizable()
@@ -51,8 +75,12 @@ struct InvitationQRCodeView: View {
                             .accessibilityLabel("Network invitation QR code")
                     }
 
-                    InvitationLifetimeView(metadata: metadata, now: context.date)
                 }
+            }
+            .onChange(of: invitation, initial: true) { _, newInvitation in
+                // The countdown updates every second; only a changed invitation needs rendering.
+                image = Self.makeImage(for: newInvitation)
+                renderedInvitation = newInvitation
             }
         } else {
             ContentUnavailableView(
@@ -63,7 +91,7 @@ struct InvitationQRCodeView: View {
         }
     }
 
-    private var image: Image? {
+    private static func makeImage(for invitation: String) -> Image? {
         guard let invitationURL = InvitationLink.url(for: invitation) else {
             return nil
         }
@@ -71,9 +99,9 @@ struct InvitationQRCodeView: View {
         filter.message = Data(invitationURL.absoluteString.utf8)
         filter.correctionLevel = "L"
 
-        let context = CIContext()
-        guard let output = filter.outputImage,
-              let cgImage = context.createCGImage(output, from: output.extent) else {
+        // The QR generator supplies a bitmap directly. Creating a CIContext here
+        // unnecessarily initializes Metal and its binary-archive usage database.
+        guard let cgImage = filter.outputImage?.cgImage else {
             return nil
         }
         return Image(decorative: cgImage, scale: 1)
@@ -83,35 +111,41 @@ struct InvitationQRCodeView: View {
 private struct InvitationLifetimeView: View {
     let metadata: InvitationMetadata
     let now: Date
+    let regenerate: (() -> Void)?
 
     var body: some View {
-        HStack(spacing: 12) {
-            Gauge(value: metadata.remaining(at: now), in: 0...metadata.duration) {
-                Image(systemName: "timer")
-                    .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Time Remaining")
+                Spacer()
+                if let regenerate {
+                    Button("Re-Generate", systemImage: "arrow.clockwise", action: regenerate)
+                }
             }
-            .gaugeStyle(.accessoryCircularCapacity)
-            .tint(metadata.isExpired(at: now) ? .red : .accentColor)
-            .frame(width: 36, height: 36)
+
+            HStack {
+                Label(metadata.isExpired(at: now) ? "Expired" : "Valid for \(countdownText)", systemImage: "timer")
+                    .foregroundStyle(metadata.isExpired(at: now) ? Color.red : Color.primary)
+                Spacer()
+                Text("Expires \(metadata.expiresAt, format: .dateTime.hour().minute().second())")
+                    .foregroundStyle(.secondary)
+            }
+
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(.secondary.opacity(0.25))
+                    Capsule()
+                        .fill(metadata.isExpired(at: now) ? Color.red : Color.green)
+                        .frame(
+                            width: geometry.size.width
+                                * metadata.remaining(at: now) / metadata.duration
+                        )
+                }
+            }
+            .frame(height: 3)
             .accessibilityLabel("Invitation time remaining")
             .accessibilityValue(Text(countdownText))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Group {
-                    if metadata.isExpired(at: now) {
-                        Text("Expired")
-                            .foregroundStyle(.red)
-                    } else {
-                        Text("Valid for \(Text(countdownText))")
-                    }
-                }
-                .font(.headline)
-                Text("Created \(metadata.issuedAt, format: .dateTime.hour().minute().second())")
-                Text("Expires \(metadata.expiresAt, format: .dateTime.hour().minute().second())")
-                Text("Single use")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -133,10 +167,9 @@ struct InvitationShareLink<Label: View>: View {
     @ViewBuilder let label: () -> Label
 
     var body: some View {
-        if let metadata = InvitationMetadata(invitation: invitation),
-           let invitationURL = InvitationLink.url(for: invitation) {
+        if let metadata = InvitationMetadata(invitation: invitation) {
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                ShareLink(item: invitationURL, label: label)
+                ShareLink(item: invitation, label: label)
                     .disabled(metadata.isExpired(at: context.date))
             }
         }

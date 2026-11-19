@@ -21,6 +21,8 @@ struct ControlProtocolTests {
             .sessionLiveness(ControlHeader(type: .sessionLiveness, context: context), .init(kind: .probe, nonce: 42)),
             .queuePressure(ControlHeader(type: .queuePressure, context: context), .init(level: .elevated, availableSlots: 7, retryAfterMilliseconds: 500)),
             .synchronizationHint(ControlHeader(type: .synchronizationHint, context: context), .init(scope: .blackboard, cursor: "cursor-7")),
+            .peerLifecycle(ControlHeader(type: .peerLifecycle, context: context), .init(reason: .applicationBackgrounded)),
+            .peerNetworkInfo(ControlHeader(type: .peerNetworkInfo, context: context), .init(ipv4Address: "192.0.2.10")),
             .protocolError(ControlHeader(type: .protocolError, context: context), .init(code: .unsupportedVersion, relatedMessageID: envelopeID))
         ]
         let codec = ControlCodec()
@@ -163,6 +165,21 @@ struct ControlProtocolTests {
 
         let channels = await queue.drain(for: destination, now: now).map(\.channel)
         #expect(channels == [.control, .control, .data, .control, .control, .blackboard])
+    }
+
+    @Test("Peer network reports accept IPv4 or missing addresses, and reject IPv6 and malformed values")
+    func peerNetworkInfoValidation() throws {
+        let header = ControlHeader(type: .peerNetworkInfo, context: context())
+        let codec = ControlCodec()
+        for address in [nil, "192.168.1.157"] as [String?] {
+            let message = ControlMessage.peerNetworkInfo(header, .init(ipv4Address: address))
+            #expect(try codec.decode(envelope: envelope(message)) == message)
+        }
+        for address in ["fe80::1%en0", "256.1.1.1", "1.2.3", "192.168.1.1\\n", "0.0.0.0"] {
+            #expect(throws: ControlCodecError.invalidValue) {
+                try codec.encode(.peerNetworkInfo(header, .init(ipv4Address: address)))
+            }
+        }
     }
 
     private func context() -> ControlContext {

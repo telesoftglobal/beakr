@@ -10,6 +10,7 @@ public enum AuthorityTrustStateError: Error, Equatable, Sendable {
     case noncanonicalLedger
     case ledgerTooLarge
     case nodeNotFound
+    case unavailable
 }
 
 /// Authority-host composition boundary. Membership and revocations are stored
@@ -17,6 +18,8 @@ public enum AuthorityTrustStateError: Error, Equatable, Sendable {
 /// before either independently served endpoint advances.
 public actor AuthorityTrustStateCoordinator: CertificateEnrollmentMembershipPublishing {
     public static let maximumLedgerBytes = 4_194_304
+    // Renew well before the LAN admission freshness limit, even without mutations.
+    public static let revocationRenewalInterval: TimeInterval = 60 * 60
 
     public let membershipEndpoint: ProfileMembershipHTTPEndpoint
     public let revocationEndpoint: RevocationSnapshotHTTPEndpoint
@@ -76,7 +79,7 @@ public actor AuthorityTrustStateCoordinator: CertificateEnrollmentMembershipPubl
             try persist(ledger, to: ledgerURL)
         }
         try verify(ledger, authority: authority, networkID: networkID, environment: environment, now: now)
-        return AuthorityTrustStateCoordinator(
+        let coordinator = AuthorityTrustStateCoordinator(
             authority: authority,
             networkID: networkID,
             environment: environment,
@@ -85,6 +88,58 @@ public actor AuthorityTrustStateCoordinator: CertificateEnrollmentMembershipPubl
             membershipEndpoint: .init(snapshot: ledger.membership),
             revocationEndpoint: .init(snapshot: ledger.revocations)
         )
+        await coordinator.revocationEndpoint.setSnapshotProvider { [weak coordinator] date in
+            guard let coordinator else { throw AuthorityTrustStateError.unavailable }
+            return try await coordinator.revocationSnapshotForServing(now: date)
+        }
+        return coordinator
+    }
+
+    /// Writes a fresh trust ledger containing only the replacement administrator.
+    /// This is used by an immediate authority reset, where credentials issued by
+    /// the retiring authority intentionally stop being trusted at cutover.
+    public static func writeSingleMemberLedger(
+        authority: CredentialAuthority,
+        networkID: NetworkID,
+        environment: String,
+        networkDisplayName: String,
+        administratorCredential: NodeCredential,
+        certificatePublicKey: Data,
+        to ledgerURL: URL,
+        now: Date = Date()
+    ) throws {
+        try CredentialVerifier.verify(
+            administratorCredential,
+            trustedAuthorityPublicKey: authority.publicKeyRepresentation,
+            networkID: networkID,
+            environment: environment,
+            now: now
+        )
+        let membership = try ProfileMembershipAuthority(
+            privateKeyRepresentation: authority.privateKeyRepresentation
+        ).sign(.init(
+            networkID: networkID,
+            networkDisplayName: networkDisplayName,
+            generation: 0,
+            generatedAtMilliseconds: milliseconds(now),
+            records: [.init(
+                credential: administratorCredential,
+                certificatePublicKey: certificatePublicKey,
+                sessionID: SessionID()
+            )]
+        ))
+        let ledger = AuthorityTrustLedger(
+            membership: membership,
+            revocations: try authority.issueRevocationSnapshot(revocations: [], now: now)
+        )
+        try verify(
+            ledger,
+            authority: authority,
+            networkID: networkID,
+            environment: environment,
+            now: now
+        )
+        try persist(ledger, to: ledgerURL)
     }
 
     public func publishEnrollment(
@@ -155,9 +210,52 @@ public actor AuthorityTrustStateCoordinator: CertificateEnrollmentMembershipPubl
     public func membershipSnapshot() -> ProfileMembershipSnapshot { ledger.membership }
     public func revocationSnapshot() -> CredentialRevocationSnapshot { ledger.revocations }
 
+    /// Installs an already authority-signed membership decision while retaining
+    /// the canonical revocation snapshot. Replaying the installed generation is
+    /// idempotent; conflicting or skipped generations fail closed.
+    public func installMembershipSnapshot(
+        _ membership: ProfileMembershipSnapshot,
+        now: Date = Date()
+    ) async throws {
+        if membership == ledger.membership { return }
+        guard membership.claims.generation == ledger.membership.claims.generation + 1 else {
+            throw AuthorityTrustStateError.noncanonicalLedger
+        }
+        let proposed = AuthorityTrustLedger(
+            membership: membership,
+            revocations: ledger.revocations
+        )
+        try Self.verify(
+            proposed,
+            authority: authority,
+            networkID: networkID,
+            environment: environment,
+            now: now
+        )
+        try Self.persist(proposed, to: ledgerURL)
+        ledger = proposed
+        try await membershipEndpoint.replaceSnapshot(membership)
+    }
+
+    private func revocationSnapshotForServing(now: Date) throws -> CredentialRevocationSnapshot {
+        let generatedAt = Date(timeIntervalSince1970:
+            TimeInterval(ledger.revocations.claims.generatedAtMilliseconds) / 1_000)
+        if now.timeIntervalSince(generatedAt) >= Self.revocationRenewalInterval {
+            try renewRevocationLedger(now: now)
+        }
+        return ledger.revocations
+    }
+
     /// Re-signs the current revocation set so peers can authenticate after the
     /// previous snapshot's freshness window has elapsed.
     public func refreshRevocationSnapshot(now: Date = Date()) async throws {
+        try renewRevocationLedger(now: now)
+        try await revocationEndpoint.replaceSnapshot(ledger.revocations)
+    }
+
+    // No suspension between reading, persisting, and installing the ledger:
+    // request-driven renewal must not overwrite a concurrent membership change.
+    private func renewRevocationLedger(now: Date) throws {
         let nextMilliseconds = max(
             Self.milliseconds(now),
             ledger.revocations.claims.generatedAtMilliseconds + 1
@@ -178,7 +276,6 @@ public actor AuthorityTrustStateCoordinator: CertificateEnrollmentMembershipPubl
             now: now
         )
         try Self.persist(proposed, to: ledgerURL)
-        try await revocationEndpoint.replaceSnapshot(snapshot)
         ledger = proposed
     }
 
@@ -226,9 +323,9 @@ public actor AuthorityTrustStateCoordinator: CertificateEnrollmentMembershipPubl
             now: now
         )
         try Self.persist(proposed, to: ledgerURL)
+        ledger = proposed
         try await membershipEndpoint.replaceSnapshot(membership)
         try await revocationEndpoint.replaceSnapshot(revocationSnapshot)
-        ledger = proposed
     }
 
     private static func verify(

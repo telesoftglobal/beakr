@@ -1,10 +1,13 @@
 #!/bin/bash
 
 set -euo pipefail
+
+source "$(cd "$(dirname "$0")" && pwd)/console-diagnostics.sh"
+trap 'beakr_script_failure "$?" "$LINENO"' ERR
 umask 077
 
 if ! command -v openssl >/dev/null 2>&1; then
-    echo "OpenSSL is required." >&2
+    beakr_log FAIL "OpenSSL is required."
     exit 1
 fi
 
@@ -13,7 +16,7 @@ if [[ -z "${output_directory}" ]]; then
     output_directory="$(mktemp -d "${TMPDIR:-/tmp}/beakrnet-mtls.XXXXXX")"
 elif [[ -e "${output_directory}" ]]; then
     if [[ ! -d "${output_directory}" ]] || [[ -n "$(find "${output_directory}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-        echo "Output path must be a new or empty directory: ${output_directory}" >&2
+        beakr_log FAIL "Output path must be a new or empty directory: ${output_directory}"
         exit 1
     fi
 else
@@ -125,6 +128,6 @@ export BEAKRNET_TEST_WRONG_AUTHORITY_DER_BASE64='$(openssl base64 -A -in "${outp
 EOF
 chmod 600 "${output_directory}/environment.sh"
 
-echo "Created short-lived BeakrNet mutual-TLS fixtures."
-echo "Environment file: ${output_directory}/environment.sh"
-echo "Delete the fixture directory after the test run."
+beakr_log PASS "Created and verified short-lived BeakrNet mutual-TLS fixtures (not a networking test pass)."
+beakr_log INFO "Environment file: ${output_directory}/environment.sh"
+beakr_log INFO "Delete the fixture directory after the test run."

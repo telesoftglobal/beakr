@@ -28,6 +28,7 @@ public struct BonjourDiscoveryMetadata: Equatable, Sendable {
     public static let currentVersion = 1
     public static let maximumDisplayNameUTF8Length = 128
 
+    public let networkID: NetworkID?
     public let version: Int
     public let protocolMajorVersion: Int
     public let nodeIDHint: NodeID
@@ -35,12 +36,14 @@ public struct BonjourDiscoveryMetadata: Equatable, Sendable {
     public let displayName: String?
 
     public init(
+        networkID: NetworkID? = nil,
         version: Int = Self.currentVersion,
         protocolMajorVersion: Int = TransportCapabilities.currentProtocolVersion,
         nodeIDHint: NodeID,
         advertisementNonce: Data,
         displayName: String? = nil
     ) {
+        self.networkID = networkID
         self.version = version
         self.protocolMajorVersion = protocolMajorVersion
         self.nodeIDHint = nodeIDHint
@@ -55,6 +58,7 @@ public struct BonjourDiscoveryMetadata: Equatable, Sendable {
             "node": nodeIDHint.rawValue.uuidString.lowercased(),
             "nonce": advertisementNonce.base64EncodedString()
         ]
+        if let networkID { record["network"] = networkID.rawValue.uuidString.lowercased() }
         if let displayName {
             record["name"] = displayName
         }
@@ -66,6 +70,7 @@ public enum BonjourMetadataError: Error, Equatable, Sendable {
     case missingField(String)
     case unsupportedVersion(Int)
     case invalidProtocolVersion
+    case invalidNetworkID
     case invalidNodeID
     case invalidAdvertisementNonce
     case invalidDisplayName
@@ -93,7 +98,15 @@ public enum BonjourMetadataParser {
            displayName.isEmpty || displayName.utf8.count > BonjourDiscoveryMetadata.maximumDisplayNameUTF8Length {
             throw BonjourMetadataError.invalidDisplayName
         }
+        let networkID: NetworkID?
+        if let value = record["network"] {
+            guard let uuid = UUID(uuidString: value) else { throw BonjourMetadataError.invalidNetworkID }
+            networkID = NetworkID(rawValue: uuid)
+        } else {
+            networkID = nil
+        }
         return BonjourDiscoveryMetadata(
+            networkID: networkID,
             version: version,
             protocolMajorVersion: protocolVersion,
             nodeIDHint: NodeID(rawValue: nodeUUID),
@@ -164,6 +177,7 @@ public enum BonjourListenerState: Equatable, Sendable {
 public enum BonjourListenerEvent: Sendable {
     case state(BonjourListenerState)
     case connection(any BonjourConnection)
+    case connectionEnded(UUID)
     case permissionDenied
 }
 
@@ -200,11 +214,16 @@ public enum BonjourConnectionIOError: Error, Equatable, Sendable {
 
 public protocol BonjourConnection: AnyObject, Sendable {
     var id: UUID { get }
+    var remoteIPAddress: String? { get }
     func start(stateHandler: @escaping @Sendable (BonjourConnectionState) -> Void)
     func sendFrame(_ data: Data) async throws
     func receiveFrame(maximumBytes: Int) async throws -> Data
     func peerCertificate() throws -> BonjourPeerCertificate
     func cancel()
+}
+
+public extension BonjourConnection {
+    var remoteIPAddress: String? { nil }
 }
 
 public protocol BonjourConnectionFactory: Sendable {
@@ -217,6 +236,7 @@ public enum BonjourDiagnostic: Equatable, Sendable {
     case discoveryAdded(BonjourDiscoveryKey, nodeIDHint: NodeID)
     case discoveryChanged(BonjourDiscoveryKey, nodeIDHint: NodeID)
     case discoveryRemoved(BonjourEndpointID)
+    case discoveryNetworkIgnored(BonjourEndpointID)
     case discoveryRejected(BonjourEndpointID, reason: BonjourMetadataError)
     case permissionDenied(component: String)
     case initiatorSelected(BonjourDiscoveryKey, hintedPeer: NodeID)
@@ -224,6 +244,7 @@ public enum BonjourDiagnostic: Equatable, Sendable {
     case nodeIDHintCollision(BonjourDiscoveryKey)
     case connectionState(UUID, BonjourConnectionState)
     case connectionCreationFailed(BonjourDiscoveryKey, reason: String)
+    case reconnectScheduled(BonjourDiscoveryKey, delay: Duration)
     case staleCallbackIgnored(component: String, generation: UInt64)
 }
 
@@ -233,33 +254,58 @@ public actor BonjourDiscoveryCoordinator {
     public typealias ConnectionHandler = @Sendable (BonjourDiscoveryCandidate, any BonjourConnection) -> Void
     public typealias ConnectionEndedHandler = @Sendable (UUID) -> Void
 
+    private let networkID: NetworkID?
     private let localNodeID: NodeID
     private let browser: any BonjourBrowsing
     private let connectionFactory: any BonjourConnectionFactory
     private let diagnosticSink: BonjourDiagnosticSink
     private let connectionHandler: ConnectionHandler
     private let connectionEndedHandler: ConnectionEndedHandler
+    private let authenticateConnection: (@Sendable (BonjourDiscoveryCandidate, any BonjourConnection) async -> Bool)?
+    private var retryDelays: [BonjourDiscoveryKey: Duration] = [:]
+    private let maximumReconnectDelay: Duration
     private let reconnectDelay: Duration
+    private let discoveryLossGracePeriod: Duration
+    private let connectionAttemptTimeout: Duration
+    private let stableConnectionDuration: Duration
+    private var authenticatedAt: [BonjourDiscoveryKey: ContinuousClock.Instant] = [:]
     private var generation: UInt64 = 0
     private var candidates: [BonjourDiscoveryKey: BonjourDiscoveryCandidate] = [:]
     private var keysByEndpoint: [BonjourEndpointID: BonjourDiscoveryKey] = [:]
     private var connections: [BonjourDiscoveryKey: any BonjourConnection] = [:]
     private var handedOffConnectionIDs: Set<UUID> = []
     private var reconnectTasks: [BonjourDiscoveryKey: Task<Void, Never>] = [:]
+    private var discoveryLossTasks: [BonjourDiscoveryKey: Task<Void, Never>] = [:]
+    private var connectionAttemptTasks: [BonjourDiscoveryKey: Task<Void, Never>] = [:]
 
     public init(
         localNodeID: NodeID,
+        networkID: NetworkID? = nil,
         browser: any BonjourBrowsing,
         connectionFactory: any BonjourConnectionFactory,
         reconnectDelay: Duration = .seconds(1),
+        discoveryLossGracePeriod: Duration = .seconds(15),
+        maximumReconnectDelay: Duration = .seconds(30),
+        connectionAttemptTimeout: Duration = .seconds(15),
+        stableConnectionDuration: Duration = .seconds(30),
         diagnosticSink: @escaping BonjourDiagnosticSink = { _ in },
         connectionHandler: @escaping ConnectionHandler = { _, _ in },
-        connectionEndedHandler: @escaping ConnectionEndedHandler = { _ in }
+        connectionEndedHandler: @escaping ConnectionEndedHandler = { _ in },
+        authenticateConnection: (@Sendable (BonjourDiscoveryCandidate, any BonjourConnection) async -> Bool)? = nil
     ) {
+        precondition(reconnectDelay > .zero && maximumReconnectDelay >= reconnectDelay)
+        precondition(connectionAttemptTimeout > .zero)
+        precondition(stableConnectionDuration > .zero)
+        self.stableConnectionDuration = stableConnectionDuration
+        self.connectionAttemptTimeout = connectionAttemptTimeout
+        self.maximumReconnectDelay = maximumReconnectDelay
+        self.authenticateConnection = authenticateConnection
+        self.networkID = networkID
         self.localNodeID = localNodeID
         self.browser = browser
         self.connectionFactory = connectionFactory
         self.reconnectDelay = reconnectDelay
+        self.discoveryLossGracePeriod = discoveryLossGracePeriod
         self.diagnosticSink = diagnosticSink
         self.connectionHandler = connectionHandler
         self.connectionEndedHandler = connectionEndedHandler
@@ -281,9 +327,33 @@ public actor BonjourDiscoveryCoordinator {
         handedOffConnectionIDs.removeAll()
         reconnectTasks.values.forEach { $0.cancel() }
         reconnectTasks.removeAll()
+        retryDelays.removeAll()
+        authenticatedAt.removeAll()
+        discoveryLossTasks.values.forEach { $0.cancel() }
+        discoveryLossTasks.removeAll()
+        connectionAttemptTasks.values.forEach { $0.cancel() }
+        connectionAttemptTasks.removeAll()
         connections.removeAll()
         candidates.removeAll()
         keysByEndpoint.removeAll()
+    }
+
+    /// Counts owned resources, not all Swift tasks. Handed-off connections are
+    /// also tracked by the transport controller and must not be added to it.
+    public struct ResourceSnapshot: Sendable, Equatable {
+        public let connections: Int
+        public let reconnectTasks: Int
+        public let discoveryLossTasks: Int
+        public let connectionAttemptTasks: Int
+    }
+
+    public func resourceSnapshot() -> ResourceSnapshot {
+        ResourceSnapshot(
+            connections: connections.count,
+            reconnectTasks: reconnectTasks.count,
+            discoveryLossTasks: discoveryLossTasks.count,
+            connectionAttemptTasks: connectionAttemptTasks.count
+        )
     }
 
     public func discoveredCandidates() -> [BonjourDiscoveryCandidate] {
@@ -320,19 +390,41 @@ public actor BonjourDiscoveryCoordinator {
         do {
             metadata = try BonjourMetadataParser.parse(advertisement.txtRecord)
         } catch let error as BonjourMetadataError {
+            discardEndpoint(advertisement.endpointID)
             diagnosticSink(.discoveryRejected(advertisement.endpointID, reason: error))
             return
         } catch {
             return
         }
 
-        if let previousKey = keysByEndpoint[advertisement.endpointID],
-           previousKey.advertisementNonce != metadata.advertisementNonce {
-            connections.removeValue(forKey: previousKey)?.cancel()
+        // TXT metadata is only a routing hint. TLS and signed membership still authenticate peers.
+        // Missing network metadata is ignored as well: guessing would recreate cross-network attempts.
+        if let networkID, metadata.networkID != networkID {
+            discardEndpoint(advertisement.endpointID)
+            diagnosticSink(.discoveryNetworkIgnored(advertisement.endpointID))
+            return
+        }
+
+        // Discovery removal drops the endpoint mapping, but a handed-off connection
+        // may still be in its grace period when a new advertisement arrives.
+        let previousKeys = Set(connections.keys).union(candidates.keys).filter {
+            $0.endpointID == advertisement.endpointID &&
+                $0.advertisementNonce != metadata.advertisementNonce
+        }
+        for previousKey in previousKeys {
+            connections[previousKey]?.cancel()
+            removeConnection(for: previousKey)
             reconnectTasks.removeValue(forKey: previousKey)?.cancel()
             candidates.removeValue(forKey: previousKey)
+            retryDelays.removeValue(forKey: previousKey)
         }
         let candidate = BonjourDiscoveryCandidate(advertisement: advertisement, metadata: metadata)
+        discoveryLossTasks.removeValue(forKey: candidate.key)?.cancel()
+        let advertisementChanged = candidates[candidate.key] != candidate
+        if advertisementChanged {
+            retryDelays.removeValue(forKey: candidate.key)
+            reconnectTasks.removeValue(forKey: candidate.key)?.cancel()
+        }
         candidates[candidate.key] = candidate
         keysByEndpoint[advertisement.endpointID] = candidate.key
         diagnosticSink(isChange
@@ -349,6 +441,7 @@ public actor BonjourDiscoveryCoordinator {
             return
         }
         diagnosticSink(.initiatorSelected(candidate.key, hintedPeer: candidate.nodeIDHint))
+        guard reconnectTasks[candidate.key] == nil else { return }
         startConnection(for: candidate, generation: callbackGeneration)
     }
 
@@ -364,6 +457,15 @@ public actor BonjourDiscoveryCoordinator {
             let connection = try connectionFactory.makeConnection(to: candidate.key.endpointID)
             connections[candidate.key] = connection
             let connectionID = connection.id
+            let timeout = connectionAttemptTimeout
+            connectionAttemptTasks[candidate.key] = Task { [weak self] in
+                do { try await Task.sleep(for: timeout) }
+                catch { return }
+                guard !Task.isCancelled else { return }
+                await self?.expireConnectionAttempt(
+                    connectionID: connectionID, key: candidate.key, generation: callbackGeneration
+                )
+            }
             connection.start { [weak self] state in
                 Task { await self?.handleConnectionState(
                     state,
@@ -378,12 +480,72 @@ public actor BonjourDiscoveryCoordinator {
         }
     }
 
+    // Network.framework can remain preparing/waiting indefinitely after path loss.
+    // Bound only transport establishment; authenticated connections keep their own lifecycle.
+    private func expireConnectionAttempt(
+        connectionID: UUID,
+        key: BonjourDiscoveryKey,
+        generation callbackGeneration: UInt64
+    ) {
+        guard callbackGeneration == generation,
+              let connection = connections[key], connection.id == connectionID,
+              !handedOffConnectionIDs.contains(connectionID) else { return }
+        diagnosticSink(.connectionState(connectionID, .failed(reason: "connection-attempt-timeout")))
+        connection.cancel()
+        removeConnection(for: key)
+        scheduleReconnect(for: key, generation: callbackGeneration)
+    }
+
+    private func discardEndpoint(_ endpointID: BonjourEndpointID) {
+        keysByEndpoint.removeValue(forKey: endpointID)
+        let keys = Set(connections.keys).union(candidates.keys).union(reconnectTasks.keys)
+            .filter { $0.endpointID == endpointID }
+        for key in keys {
+            candidates.removeValue(forKey: key)
+            retryDelays.removeValue(forKey: key)
+            reconnectTasks.removeValue(forKey: key)?.cancel()
+            discoveryLossTasks.removeValue(forKey: key)?.cancel()
+            connections[key]?.cancel()
+            removeConnection(for: key)
+        }
+    }
+
     private func remove(endpointID: BonjourEndpointID) {
         guard let key = keysByEndpoint.removeValue(forKey: endpointID) else { return }
         candidates.removeValue(forKey: key)
+        retryDelays.removeValue(forKey: key)
         reconnectTasks.removeValue(forKey: key)?.cancel()
         diagnosticSink(.discoveryRemoved(endpointID))
-        // Discovery loss is not authentication failure and does not tear down a connection.
+        if let connection = connections[key], handedOffConnectionIDs.contains(connection.id) {
+            scheduleDiscoveryLossExpiry(for: key, generation: generation)
+        } else {
+            // Pending attempts must not outlive the advertisement they resolved.
+            connections[key]?.cancel()
+            removeConnection(for: key)
+        }
+    }
+
+    private func scheduleDiscoveryLossExpiry(
+        for key: BonjourDiscoveryKey,
+        generation callbackGeneration: UInt64
+    ) {
+        discoveryLossTasks.removeValue(forKey: key)?.cancel()
+        discoveryLossTasks[key] = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: self.discoveryLossGracePeriod)
+            guard !Task.isCancelled else { return }
+            await self.expireConnectionAfterDiscoveryLoss(for: key, generation: callbackGeneration)
+        }
+    }
+
+    private func expireConnectionAfterDiscoveryLoss(
+        for key: BonjourDiscoveryKey,
+        generation callbackGeneration: UInt64
+    ) {
+        discoveryLossTasks.removeValue(forKey: key)
+        guard callbackGeneration == generation, candidates[key] == nil else { return }
+        connections[key]?.cancel()
+        removeConnection(for: key)
     }
 
     private func handleConnectionState(
@@ -398,6 +560,7 @@ public actor BonjourDiscoveryCoordinator {
         }
         diagnosticSink(.connectionState(connectionID, state))
         if state == .ready, let connection = connections[key] {
+            connectionAttemptTasks.removeValue(forKey: key)?.cancel()
             reconnectTasks.removeValue(forKey: key)?.cancel()
             guard let candidate = candidates[key] else {
                 connection.cancel()
@@ -405,7 +568,14 @@ public actor BonjourDiscoveryCoordinator {
                 return
             }
             if handedOffConnectionIDs.insert(connectionID).inserted {
-                connectionHandler(candidate, connection)
+                if let authenticateConnection {
+                    Task {
+                        let admitted = await authenticateConnection(candidate, connection)
+                        self.authenticationCompleted(admitted, connectionID: connectionID, key: key, generation: callbackGeneration)
+                    }
+                } else {
+                    connectionHandler(candidate, connection)
+                }
             }
         }
         if case .failed = state {
@@ -418,6 +588,17 @@ public actor BonjourDiscoveryCoordinator {
         }
     }
 
+    private func authenticationCompleted(_ admitted: Bool, connectionID: UUID, key: BonjourDiscoveryKey, generation callbackGeneration: UInt64) {
+        guard callbackGeneration == generation, connections[key]?.id == connectionID else { return }
+        if admitted {
+            authenticatedAt[key] = ContinuousClock.now
+        } else {
+            connections[key]?.cancel()
+            removeConnection(for: key)
+            scheduleReconnect(for: key, generation: callbackGeneration)
+        }
+    }
+
     private func scheduleReconnect(for key: BonjourDiscoveryKey, generation callbackGeneration: UInt64) {
         guard callbackGeneration == generation,
               reconnectTasks[key] == nil,
@@ -425,9 +606,12 @@ public actor BonjourDiscoveryCoordinator {
               candidate.protocolMajorVersion == TransportCapabilities.currentProtocolVersion,
               candidate.nodeIDHint != localNodeID,
               Self.canonicalNodeID(localNodeID, precedes: candidate.nodeIDHint) else { return }
+        let delay = retryDelays[key] ?? reconnectDelay
+        retryDelays[key] = min(maximumReconnectDelay, delay * 2)
+        diagnosticSink(.reconnectScheduled(key, delay: delay))
         reconnectTasks[key] = Task { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(for: self.reconnectDelay)
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
             await self.retryConnection(for: key, generation: callbackGeneration)
         }
@@ -440,7 +624,15 @@ public actor BonjourDiscoveryCoordinator {
     }
 
     private func removeConnection(for key: BonjourDiscoveryKey) {
+        connectionAttemptTasks.removeValue(forKey: key)?.cancel()
+        discoveryLossTasks.removeValue(forKey: key)?.cancel()
         guard let connection = connections.removeValue(forKey: key) else { return }
+        // A completed handshake alone is not recovery: a peer may immediately
+        // close again. Only a sustained authenticated connection resets backoff.
+        if let admittedAt = authenticatedAt.removeValue(forKey: key),
+           admittedAt.duration(to: ContinuousClock.now) >= stableConnectionDuration {
+            retryDelays.removeValue(forKey: key)
+        }
         if handedOffConnectionIDs.remove(connection.id) != nil {
             connectionEndedHandler(connection.id)
         }
@@ -455,16 +647,19 @@ public actor BonjourListenerCoordinator {
     private let listener: any BonjourListening
     private let diagnosticSink: BonjourDiagnosticSink
     private let connectionHandler: @Sendable (any BonjourConnection) -> Void
+    private let connectionEndedHandler: @Sendable (UUID) -> Void
     private var generation: UInt64 = 0
 
     public init(
         listener: any BonjourListening,
         diagnosticSink: @escaping BonjourDiagnosticSink = { _ in },
-        connectionHandler: @escaping @Sendable (any BonjourConnection) -> Void
+        connectionHandler: @escaping @Sendable (any BonjourConnection) -> Void,
+        connectionEndedHandler: @escaping @Sendable (UUID) -> Void = { _ in }
     ) {
         self.listener = listener
         self.diagnosticSink = diagnosticSink
         self.connectionHandler = connectionHandler
+        self.connectionEndedHandler = connectionEndedHandler
     }
 
     public func start() {
@@ -488,6 +683,7 @@ public actor BonjourListenerCoordinator {
         switch event {
         case .state(let state): diagnosticSink(.listenerState(state))
         case .connection(let connection): connectionHandler(connection)
+        case .connectionEnded(let connectionID): connectionEndedHandler(connectionID)
         case .permissionDenied: diagnosticSink(.permissionDenied(component: "listener"))
         }
     }

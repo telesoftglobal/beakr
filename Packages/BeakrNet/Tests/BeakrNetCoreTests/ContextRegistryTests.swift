@@ -19,8 +19,10 @@ struct ContextRegistryTests {
             displayName: "Home"
         )
 
-        let original = try await registry.resolve(for: firstProfile)
-        try await registry.detach(firstProfile.id)
+        // Exact millisecond fixtures avoid sub-millisecond Date round-trip noise.
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let original = try await registry.resolve(for: firstProfile, now: now)
+        try await registry.detach(firstProfile.id, now: now.addingTimeInterval(1))
         let archived = try #require(await registry.context(networkID: networkID))
         #expect(archived.id == original.id)
         #expect(archived.messageStoreID == original.messageStoreID)
@@ -31,7 +33,7 @@ struct ContextRegistryTests {
             localNodeID: NodeID(),
             displayName: "Home Rejoined"
         )
-        let reattached = try await registry.resolve(for: replacementProfile)
+        let reattached = try await registry.resolve(for: replacementProfile, now: now.addingTimeInterval(2))
 
         #expect(reattached.id == original.id)
         #expect(reattached.messageStoreID == original.messageStoreID)

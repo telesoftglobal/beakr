@@ -59,6 +59,7 @@ struct CertificateEnrollmentTests {
             requestID: fixture.request.requestID,
             nodeID: fixture.request.nodeID,
             nodePublicKey: fixture.request.nodePublicKey,
+            certificateSigningRequestDER: fixture.request.certificateSigningRequestDER,
             credential: fixture.request.credential,
             environment: fixture.request.environment,
             challenge: fixture.request.challenge,
@@ -68,6 +69,9 @@ struct CertificateEnrollmentTests {
         await #expect(throws: CertificateEnrollmentError.invalidSignature) {
             try await fixture.validator.validate(request, now: fixture.now)
         }
+        // A rejected signature must not consume the challenge for the legitimate request.
+        let validated = try await fixture.validator.validate(fixture.request, now: fixture.now)
+        #expect(validated.nodeID == fixture.identity.nodeID)
     }
 
     @Test("Certificate validity is capped at 30 days")

@@ -1,18 +1,532 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import BeakrNetCore
+import BeakrNetEnrollment
+import BeakrNetHost
 #if os(macOS)
 import AppKit
+import Darwin
+import Network
 #elseif os(iOS)
 import AudioToolbox
+import Darwin
 import Network
 import NetworkExtension
 import UIKit
 #endif
 
+private struct UsedInvitationNotice: View {
+    var body: some View {
+        ContentUnavailableView(
+            "Invitation No Longer Available",
+            systemImage: "checkmark.shield",
+            description: Text("This invitation has already been used or closed. Generate a new invitation for another device.")
+        )
+    }
+}
+
+private extension MessageFlagColor {
+    static let appleMailMenuOrder: [MessageFlagColor] = [
+        .orange,
+        .red,
+        .purple,
+        .blue,
+        .yellow,
+        .green,
+        .gray
+    ]
+
+    var title: LocalizedStringResource {
+        switch self {
+        case .red: "Red"
+        case .orange: "Orange"
+        case .yellow: "Yellow"
+        case .green: "Green"
+        case .blue: "Blue"
+        case .purple: "Purple"
+        case .gray: "Grey"
+        }
+    }
+
+    var swiftUIColor: Color {
+        switch self {
+        case .red: .red
+        case .orange: .orange
+        case .yellow: .yellow
+        case .green: .green
+        case .blue: .blue
+        case .purple: .purple
+        case .gray: .gray
+        }
+    }
+
+#if os(macOS)
+    var macFlagImage: NSImage {
+        guard let symbol = NSImage(
+            systemSymbolName: "flag.fill",
+            accessibilityDescription: String(localized: title)
+        ) else {
+            return NSImage(size: NSSize(width: 16, height: 16))
+        }
+        let configuration = NSImage.SymbolConfiguration(paletteColors: [macColor])
+        let image = symbol.withSymbolConfiguration(configuration) ?? symbol
+        image.isTemplate = false
+        return image
+    }
+
+    private var macColor: NSColor {
+        switch self {
+        case .red: .systemRed
+        case .orange: .systemOrange
+        case .yellow: .systemYellow
+        case .green: .systemGreen
+        case .blue: .systemBlue
+        case .purple: .systemPurple
+        case .gray: .systemGray
+        }
+    }
+#endif
+}
+
+private struct NetworkInformationRow<Content: View>: View {
+    let title: LocalizedStringResource
+    @ViewBuilder let content: Content
+
+    init(
+        _ title: LocalizedStringResource,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(title)
+
+            Spacer(minLength: 12)
+
+            content
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+private enum NetworkSectionInformation: Identifiable, Hashable {
+    case parameters
+    case devices
+
+    var id: Self { self }
+
+    var title: LocalizedStringResource {
+        switch self {
+        case .parameters: "Network Parameters"
+        case .devices: "Devices"
+        }
+    }
+}
+
+private struct NetworkSectionInformationButton: View {
+    let information: NetworkSectionInformation
+    let show: (NetworkSectionInformation) -> Void
+
+    var body: some View {
+        Button {
+            show(information)
+        } label: {
+            Image(systemName: "info.circle")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 14, height: 14)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("About \(information.title)")
+    }
+}
+
+private struct NetworkSectionInformationView: View {
+    let information: NetworkSectionInformation
+#if os(macOS)
+    @Environment(\.dismiss) private var dismiss
+#endif
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    Image(systemName: "info.circle.fill")
+                        .font(.largeTitle)
+                        .foregroundStyle(Color.accentColor)
+
+                    switch information {
+                    case .parameters:
+                        informationRow("Network Name", description: "The name used to identify this network. The name can change; the Network ID does not.")
+                        informationRow("Network ID", description: "The permanent unique identity of the network.")
+                        informationRow("Authority", description: "The device responsible for trust and membership, including approvals, credentials, and revocation.")
+                        informationRow("Services", description: "The application features available on the network. Messaging is the available service in Release 1.")
+                        informationRow("Status", description: "Whether this is the active network. Expand Status to see connection and device availability details.")
+                    case .devices:
+                        informationRow("Role", description: "The permissions each device has on this network. The Network Authority is shown first; other devices are managers or members.")
+                        informationRow("Online", description: "The device is currently reachable on the active network.", color: .green)
+                        informationRow("Offline", description: "The device is a known network member but is not currently reachable. Messages can remain queued until it reconnects.", color: .secondary)
+                        informationRow("Cached", description: "Authenticated device information, such as its name and last-seen time, is remembered locally while it is offline. Cached information is not a live connection.", color: .secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(24)
+            }
+            .navigationTitle(Text(information.title))
+#if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+#endif
+#if os(macOS)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+#endif
+        }
+#if os(iOS)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+#else
+        .frame(width: 500, height: information == .parameters ? 530 : 390)
+#endif
+    }
+
+    private func informationRow(
+        _ title: LocalizedStringKey,
+        description: LocalizedStringKey,
+        color: Color = .accentColor
+    ) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Circle()
+                .fill(color)
+                .frame(width: 10, height: 10)
+                .padding(.top, 6)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                Text(description)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct MessagingServicesView: View {
+    let bootstrap: NodeBootstrapModel
+    @State private var isSwitchingMessaging = false
+    @State private var messagingFeedback: String?
+
+    var body: some View {
+        Form {
+            Section("Messaging") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Choose the network this device uses for messaging. Authority hosting is managed separately under Networks.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(bootstrap.networks) { network in
+                        HStack {
+                            Text(network.displayName)
+                            Spacer()
+                            if network.isActive {
+                                Label("Selected for Messaging", systemImage: "bubble.left.fill")
+                                    .foregroundStyle(.blue)
+                            } else {
+                                Button("Use for Messaging") {
+                                    isSwitchingMessaging = true
+                                    Task {
+                                        await bootstrap.switchNetwork(to: network.id)
+                                        messagingFeedback = bootstrap.statusMessage
+                                        isSwitchingMessaging = false
+                                    }
+                                }
+                                .disabled(isSwitchingMessaging || bootstrap.authorityHostingBusy)
+                            }
+                        }
+                    }
+                    if isSwitchingMessaging {
+                        ProgressView("Switching messaging network…")
+                    }
+                    if let messagingFeedback {
+                        Text(messagingFeedback).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let network = bootstrap.networks.first(where: \.isActive) {
+                        Divider()
+                        MessagingConnectivityDisclosure(
+                            isActive: true,
+                            requiresAttention: bootstrap.state != .ready,
+                            connectivity: bootstrap.activeNetworkConnectivity,
+                            knownDeviceCount: bootstrap.members(for: network).count,
+                            onlineDeviceCount: bootstrap.onlineMemberIDs.count,
+                            credentialStatus: network.credentialStatus
+                        )
+                        MessagingHealthDetailsView(bootstrap: bootstrap)
+                    } else if !bootstrap.networks.isEmpty {
+                        Divider()
+                        Text("Messaging Status").font(.headline)
+                        Label("Off — No network selected for messaging", systemImage: "bubble.left")
+                            .foregroundStyle(.secondary)
+                        Text("Choose Use for Messaging above to enable messaging. Network Authority services continue independently.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if bootstrap.networks.isEmpty {
+                        Text("Create or join a network in Networks first.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Services")
+    }
+}
+
+private struct MessagingHealthDetailsView: View {
+    let bootstrap: NodeBootstrapModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Messaging Status").font(.headline)
+            Text(bootstrap.activeNetworkStatusTitle)
+            Label(bootstrap.messagingHealthMessage,
+                  systemImage: bootstrap.messagingHealth == .degraded || bootstrap.messagingHealth == .blocked
+                    ? "exclamationmark.triangle.fill" : "bubble.left.fill")
+                .foregroundStyle(bootstrap.messagingHealth.color)
+                .fixedSize(horizontal: false, vertical: true)
+            if bootstrap.peerTLSFailureCount > 0 {
+                Text("A discovered device’s certificate could not be validated. Check that both devices use the same network authority, then refresh network credentials. The warning clears when that endpoint passes validation; other peer connections do not clear it.")
+                    .font(.callout)
+            }
+            if bootstrap.credentialStatus != nil {
+                Text(bootstrap.statusMessage)
+                    .font(.callout)
+                    .textSelection(.enabled)
+            }
+            if bootstrap.credentialStatus != nil || bootstrap.peerTLSFailureCount > 0 {
+                Text("Open Network → Network Credentials to review or refresh this network’s credentials.")
+                    .font(.callout)
+            }
+        }
+    }
+}
+
+private struct NetworkCredentialDetailsView: View {
+    let bootstrap: NodeBootstrapModel
+    let network: NetworkSummary
+
+    @State private var savedDetails: NetworkCredentialDetails?
+    @State private var savedAuthority: String?
+
+    private var displayedDetails: NetworkCredentialDetails {
+        network.isActive ? bootstrap.credentialDetails : (savedDetails ?? NetworkCredentialDetails())
+    }
+
+    private var displayedAuthority: String? {
+        if network.isHostingAuthority { return bootstrap.deviceDisplayName }
+        return network.isActive
+            ? (bootstrap.activeAuthorityDeviceName ?? bootstrap.activeAuthorityEndpoint)
+            : savedAuthority
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Network Credentials").font(.headline)
+            activeCredentials
+        }
+        .task(id: network.id) {
+            savedDetails = nil
+            savedAuthority = nil
+            let snapshot = await bootstrap.savedCredentialDetails(for: network.id)
+            guard !Task.isCancelled else { return }
+            savedDetails = snapshot?.details
+            savedAuthority = snapshot?.authority
+        }
+    }
+
+    private var activeCredentials: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if network.isActive && bootstrap.credentialStatus != nil {
+                Text(bootstrap.statusMessage)
+                    .font(.callout)
+                    .textSelection(.enabled)
+            }
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                VStack(spacing: 0) {
+                    credentialRow("Credential", value: Text("Value"), remaining: Text("Relative Time"))
+                        .fontWeight(.semibold)
+                        .background(.primary.opacity(0.06))
+                    if let authority = displayedAuthority {
+                        Divider()
+                        credentialRow("Authority", explanation: "The device that manages membership and issues trusted credentials for this network.", value: Text(authority))
+                    }
+                    if let expiry = displayedDetails.accessExpiresAt {
+                        Divider()
+                        credentialRow("Device Access Expires", explanation: "When this device’s permission to belong to the network expires. Refreshing records does not grant new permissions.", value: Text(expiry, format: .dateTime.year().month().day().hour().minute()), remaining: Text(compactTime(to: expiry, from: context.date)))
+                    } else {
+                        Divider()
+                        credentialRow("Device Access Expires", value: Text("Not available"))
+                    }
+                    if let expiry = displayedDetails.certificateExpiresAt {
+                        Divider()
+                        credentialRow("Device Certificate Expires", explanation: "When this device’s certificate for secure connections expires. A valid certificate is required to authenticate this device to other devices.", value: Text(expiry, format: .dateTime.year().month().day().hour().minute()), remaining: Text(compactTime(to: expiry, from: context.date)))
+                    } else {
+                        Divider()
+                        credentialRow("Device Certificate Expires", value: Text("Not available"))
+                    }
+                    if let updated = displayedDetails.revocationsUpdatedAt {
+                        Divider()
+                        credentialRow("Revocation Records Updated", explanation: "When the authority generated the saved signed record of revoked credentials. The time column shows how long ago this was.", value: Text(updated, format: .dateTime.year().month().day().hour().minute()), remaining: Text(compactTime(to: updated, from: context.date, isUpdate: true)))
+                    } else {
+                        Divider()
+                        credentialRow("Revocation Records Updated", value: Text("Not available"))
+                    }
+                    if let expiry = displayedDetails.revocationsValidUntil {
+                        Divider()
+                        credentialRow("Validation Refresh Due", explanation: "When the saved revocation records become too old for trust validation. Refresh retrieves current signed records from the authority.", value: Text(expiry, format: .dateTime.year().month().day().hour().minute()), remaining: Text(compactTime(to: expiry, from: context.date)))
+                    } else {
+                        Divider()
+                        credentialRow("Validation Refresh Due", value: Text("Not available"))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .font(.caption)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(.separator, lineWidth: 1)
+                }
+                .textSelection(.enabled)
+                .padding(.top, 8)
+            }
+            Button(bootstrap.isRefreshingCredentials ? "Refreshing…" : "Refresh", systemImage: "arrow.clockwise") {
+                Task { await bootstrap.refreshNetworkCredentials() }
+            }
+            .disabled(!network.isActive || bootstrap.isRefreshingCredentials || bootstrap.state == .securing || bootstrap.state == .starting)
+            if !network.isActive {
+                Text("Saved credentials are shown. Certificate and validation records may be unavailable until this device is prepared for network use. Refresh currently requires selecting this network for messaging in Services.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text("Refresh Network Credentials checks this device’s network access and updates signed membership and revocation records. It does not grant new permissions.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func credentialRow(_ title: LocalizedStringResource, explanation: LocalizedStringResource? = nil, value: Text, remaining: Text = Text("—")) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            HStack(alignment: .top, spacing: 4) {
+                Text(title)
+                if let explanation {
+                    CredentialInformationButton(title: title, explanation: explanation)
+                }
+            }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .overlay(alignment: .trailing) {
+                    Rectangle().fill(.separator).frame(width: 1)
+                }
+            value
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .overlay(alignment: .trailing) {
+                    Rectangle().fill(.separator).frame(width: 1)
+                }
+            remaining
+                .monospacedDigit()
+                .frame(width: 80, alignment: .leading)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func compactTime(to date: Date, from now: Date, isUpdate: Bool = false) -> String {
+        let seconds = date.timeIntervalSince(now)
+        let minutes = Int(abs(seconds) / 60)
+        let duration: String
+        if minutes >= 1_440 {
+            duration = "\(minutes / 1_440)d \((minutes % 1_440) / 60)h"
+        } else if minutes >= 60 {
+            duration = "\(minutes / 60)h \(minutes % 60)m"
+        } else if minutes > 0 {
+            duration = "\(minutes)m"
+        } else {
+            duration = "<1m"
+        }
+        if isUpdate {
+            return seconds <= 0 ? "\(duration) ago" : "in \(duration)"
+        }
+        return seconds > 0 ? duration : "\(duration) overdue"
+    }
+
+}
+
+private struct CredentialInformationButton: View {
+    let title: LocalizedStringResource
+    let explanation: LocalizedStringResource
+    @State private var isPresented = false
+
+    var body: some View {
+        Button {
+            isPresented = true
+        } label: {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text("About \(String(localized: title))"))
+        .help(Text(explanation))
+        .popover(isPresented: $isPresented) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title).font(.headline)
+                Text(explanation).font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Done") { isPresented = false }
+            }
+            .padding()
+            .frame(idealWidth: 300, maxWidth: 340)
+        }
+    }
+}
+
+private struct NetworkLastErrorDisclosure: View {
+    let message: String?
+    @State private var isExpanded = false
+
+    @ViewBuilder
+    var body: some View {
+        if let message, !message.isEmpty {
+            DisclosureGroup(isExpanded: $isExpanded) {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+            } label: {
+                Label("Last Error", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+}
+
 #if os(macOS)
 private enum MacNavigationColumn: Hashable {
     case content
 }
+
 #endif
 
 @MainActor
@@ -23,18 +537,21 @@ struct ContentView: View {
 #if os(macOS)
     @Environment(\.openSettings) private var openSettings
     @AppStorage("net.beakr.settings.selectedTab") private var selectedSettingsTab = BeakrSettingsTab.networks.rawValue
-    @AppStorage("net.beakr.settings.networkPane") private var selectedNetworkSettingsPane = NetworkSettingsPane.information.rawValue
+    @AppStorage("net.beakr.settings.networkRequest") private var networkSettingsRequest = ""
     @AppStorage("net.beakr.networkManager.selectedNetworkID") private var persistedNetworkSettingsID = ""
     @State private var selectedSidebarRoute: MacSidebarRoute?
+    @State private var selectedSidebarCategory = MacSidebarCategory.mailboxes
     @State private var selectedDetailRoute: MacDetailRoute?
+    @State private var rememberedMailboxSelections: [MailboxSelection: MacDetailRoute] = [:]
     @State private var showingContactsDialog = false
     @State private var showingComposerDialog = false
     @State private var contextPendingDeletion: ContextSummary?
-    @State private var devicePendingForget: MacMemberDetail?
+    @State private var devicePendingRemoval: MacMemberDetail?
     @State private var confirmingHistoryDeletion = false
     @State private var confirmingQueuedDeletion = false
     @State private var macMessageSearchText = ""
     @State private var restoreMacContentFocusOnActivation = false
+    @State private var macColumnVisibility = NavigationSplitViewVisibility.all
     @FocusState private var focusedMacColumn: MacNavigationColumn?
 #endif
 
@@ -94,7 +611,7 @@ struct ContentView: View {
             .task(id: bootstrap.state) {
                 guard bootstrap.state == .ready else { return }
                 while !Task.isCancelled {
-                    await bootstrap.refreshNetworkMembers()
+                    await bootstrap.reconcileLocalNetworkMembers()
                     try? await Task.sleep(for: .seconds(15))
                 }
             }
@@ -116,10 +633,12 @@ struct ContentView: View {
                 model.synchronizeOnlineRecipients(with: ids)
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .background {
+                if phase == .inactive {
+                    bootstrap.applicationDidBecomeInactive()
+                } else if phase == .background {
                     Task { await bootstrap.applicationDidEnterBackground() }
                 } else if phase == .active {
-                    Task { await bootstrap.applicationBecameActive(forceRestart: true) }
+                    Task { await bootstrap.applicationBecameActive() }
                 }
             }
             .onOpenURL(perform: handleInvitationURL)
@@ -134,8 +653,9 @@ struct ContentView: View {
 
 #if os(macOS)
     private var desktopContent: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $macColumnVisibility) {
             mailboxSidebar
+                .background(MacSecondaryWindowPlacement(role: .sidebar))
         } content: {
             messageList
                 .toolbar {
@@ -157,25 +677,28 @@ struct ContentView: View {
         } detail: {
             messageDetail
                 .toolbar {
-                    switch selectedDetailRoute {
-                    case .message:
+                    if case .message = selectedDetailRoute {
                         MessageBodyToolbar(
-                            compose: { showingComposerDialog = true },
                             reply: replyToSelectedMessage,
                             replyAll: replyToSelectedMessage,
                             forward: forwardSelectedMessage,
+                            delete: deleteSelectedMessage,
+                            setFlag: setFlagOnSelectedMessage,
                             canReply: canReplyToSelectedMessage,
-                            canForward: canForwardSelectedMessage
+                            canForward: canForwardSelectedMessage,
+                            canDelete: canModifySelectedMessage,
+                            canFlag: canModifySelectedMessage,
+                            flagColor: selectedMessageFlagColor
                         )
-                    case .device:
+                    } else if case .device = selectedDetailRoute {
                         DevicePropertiesToolbar(
-                            forgetDevice: { devicePendingForget = selectedDevice },
-                            canForgetDevice: selectedDevice.map {
-                                !$0.isLocalDevice && !$0.isOnline
+                            removeDevice: { devicePendingRemoval = selectedDevice },
+                            canRemoveDevice: selectedDevice.map { device in
+                                !device.isLocalDevice
+                                    && device.isActiveNetwork
+                                    && bootstrap.networks.first(where: { $0.id == device.networkID })?.isHostingAuthority == true
                             } ?? false
                         )
-                    case nil:
-                        EmptyDetailToolbar()
                     }
                 }
         }
@@ -185,7 +708,7 @@ struct ContentView: View {
         .sheet(isPresented: $showingContactsDialog) {
             contactsDialog
         }
-        .sheet(isPresented: $showingComposerDialog) {
+        .sheet(isPresented: $showingComposerDialog, onDismiss: model.discardDraft) {
             composerDialog
         }
         .confirmationDialog(
@@ -223,20 +746,21 @@ struct ContentView: View {
             Text("Queued sends will be cancelled and removed. Delivered message history will be preserved.")
         }
         .confirmationDialog(
-            "Forget Remembered Device?",
+            "Remove Device from Network?",
             isPresented: Binding(
-                get: { devicePendingForget != nil },
-                set: { if !$0 { devicePendingForget = nil } }
+                get: { devicePendingRemoval != nil },
+                set: { if !$0 { devicePendingRemoval = nil } }
             ),
-            presenting: devicePendingForget
+            presenting: devicePendingRemoval
         ) { device in
-            Button("Forget \(device.displayName)", role: .destructive) {
-                devicePendingForget = nil
-                Task { await bootstrap.forgetRememberedDevice(device.deviceID) }
+            Button("Remove \(device.displayName)", role: .destructive) {
+                devicePendingRemoval = nil
+                selectedDetailRoute = nil
+                Task { await bootstrap.removeNetworkMember(device.deviceID) }
             }
             Button("Cancel", role: .cancel) {}
         } message: { device in
-            Text("This removes the cached name and last-seen information for \(device.displayName). Message history is preserved, and the device remains a network member and may reappear when it reconnects.")
+            Text("This revokes \(device.displayName)’s current credential and disconnects it from the network. The device will need a new invitation to join again. Local message history is preserved.")
         }
         .task { await bootstrap.start() }
         .task { await model.observeIncomingMessages() }
@@ -246,7 +770,7 @@ struct ContentView: View {
         .task(id: bootstrap.state) {
             guard bootstrap.state == .ready else { return }
             while !Task.isCancelled {
-                await bootstrap.refreshNetworkMembers()
+                await bootstrap.reconcileLocalNetworkMembers()
                 try? await Task.sleep(for: .seconds(15))
             }
         }
@@ -257,18 +781,58 @@ struct ContentView: View {
             model.synchronizeOnlineRecipients(with: ids)
         }
         .onChange(of: bootstrap.networks, initial: true) { _, networks in
-            guard selectedSidebarRoute == nil, let activeNetwork = networks.first(where: \.isActive) else { return }
-            selectedSidebarRoute = .mailbox(MailboxSelection(networkID: activeNetwork.id, mailbox: .inbox))
+            guard selectedSidebarRoute == nil,
+                  let activeNetwork = networks.first(where: \.isActive) else { return }
+            selectedSidebarRoute = .network(activeNetwork.id)
         }
-        .onChange(of: selectedSidebarRoute) { _, route in
-            selectedDetailRoute = nil
+        .onChange(of: selectedSidebarRoute) { previousRoute, route in
+            if let networkID = route?.networkID {
+                persistedNetworkSettingsID = networkID.rawValue.uuidString
+            }
+            if let previousMailbox = previousRoute?.mailboxSelection,
+               selectedDetailRoute?.messageSelection != nil {
+                rememberedMailboxSelections[previousMailbox] = selectedDetailRoute
+            }
+
+            if let mailbox = route?.mailboxSelection,
+               let rememberedRoute = rememberedMailboxSelections[mailbox],
+               isMessageVisible(rememberedRoute, in: mailbox) {
+                selectedDetailRoute = rememberedRoute
+            } else {
+                if let mailbox = route?.mailboxSelection {
+                    rememberedMailboxSelections[mailbox] = nil
+                }
+                selectedDetailRoute = nil
+            }
+            if case .network? = route {
+                selectedSettingsTab = BeakrSettingsTab.networks.rawValue
+                focusedMacColumn = nil
+                return
+            }
             Task { @MainActor in
                 await Task.yield()
                 focusedMacColumn = .content
             }
-            guard let networkID = route?.mailboxSelection?.networkID,
-                  !bootstrap.networks.contains(where: { $0.id == networkID && $0.isActive }) else { return }
-            Task { await bootstrap.switchNetwork(to: networkID) }
+        }
+        .onChange(of: selectedDetailRoute) { _, route in
+            if let mailbox = selectedMailbox {
+                if let route, route.messageSelection != nil, isMessageVisible(route, in: mailbox) {
+                    rememberedMailboxSelections[mailbox] = route
+                } else if route == nil {
+                    rememberedMailboxSelections[mailbox] = nil
+                }
+            }
+            guard route != nil else { return }
+            Task { @MainActor in
+                await Task.yield()
+                focusedMacColumn = .content
+            }
+        }
+        .onChange(of: selectedIncomingMessages.map(\.id)) { _, _ in
+            validateSelectedMessage()
+        }
+        .onChange(of: selectedOutgoingMessages.map(\.id)) { _, _ in
+            validateSelectedMessage()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .inactive {
@@ -291,13 +855,16 @@ struct ContentView: View {
     }
 
     private var orderedMacNetworks: [NetworkSummary] {
-        guard let activeIndex = bootstrap.networks.firstIndex(where: \.isActive) else {
-            return bootstrap.networks
-        }
-
         var orderedNetworks = bootstrap.networks
-        let activeNetwork = orderedNetworks.remove(at: activeIndex)
-        orderedNetworks.insert(activeNetwork, at: 0)
+        if let activeIndex = orderedNetworks.firstIndex(where: \.isActive) {
+            let activeNetwork = orderedNetworks.remove(at: activeIndex)
+            orderedNetworks.insert(activeNetwork, at: 0)
+        }
+        if let createdID = bootstrap.lastCreatedNetworkID,
+           let createdIndex = orderedNetworks.firstIndex(where: { $0.id == createdID }) {
+            let createdNetwork = orderedNetworks.remove(at: createdIndex)
+            orderedNetworks.insert(createdNetwork, at: 0)
+        }
         return orderedNetworks
     }
 
@@ -320,53 +887,111 @@ struct ContentView: View {
             bootstrap: bootstrap,
             orderedNetworks: orderedMacNetworks,
             selection: $selectedSidebarRoute,
+            selectedCategory: $selectedSidebarCategory,
             requestContextDeletion: { contextPendingDeletion = $0 },
+            showNetworkDetails: { network in openMacNetworkSettings(network) },
             openNetworkSettings: openMacNetworkSettings
         )
     }
 
-    private func openMacNetworkSettings(_ network: NetworkSummary) {
-        persistedNetworkSettingsID = network.id.rawValue.uuidString
+    private func openMacNetworkSettings(_ network: NetworkSummary?) {
+        if let networkID = network?.id ?? selectedSidebarRoute?.networkID {
+            persistedNetworkSettingsID = networkID.rawValue.uuidString
+        }
         selectedSettingsTab = BeakrSettingsTab.networks.rawValue
-        selectedNetworkSettingsPane = NetworkSettingsPane.information.rawValue
+        networkSettingsRequest = UUID().uuidString
         openSettings()
     }
 
     private func refreshMacNetworks() async {
-        await bootstrap.reconnectActiveNetwork()
-        await bootstrap.refreshNetworkMembers()
+        await bootstrap.refreshNetworkCredentials()
     }
 
     private var messageList: some View {
         MacContextList(
+            bootstrap: bootstrap,
             sidebarRoute: selectedSidebarRoute,
+            networks: bootstrap.networks,
+            selectedCategory: selectedSidebarCategory,
             detailRoute: $selectedDetailRoute,
             incomingMessages: selectedIncomingMessages,
             outgoingMessages: selectedOutgoingMessages,
             memberDirectory: macMemberDirectory,
             focus: $focusedMacColumn,
+            canRemoveDevice: { device in
+                !device.isLocalDevice
+                    && device.isActiveNetwork
+                    && bootstrap.networks.first(where: { $0.id == device.networkID })?.isHostingAuthority == true
+            },
+            requestDeviceRemoval: { devicePendingRemoval = $0 },
             displayName: selectedDisplayName,
             isRead: selectedIsRead,
-            isFlagged: selectedIsFlagged
+            setRead: { isRead, id in
+                guard selectedMailbox?.contextID == nil else { return }
+                model.setRead(isRead, messageID: id)
+            },
+            isFlagged: selectedIsFlagged,
+            flagColor: selectedFlagColor,
+            setFlag: { color, id in
+                guard selectedMailbox?.contextID == nil else { return }
+                model.setFlag(color, messageID: id)
+            },
+            reply: replyToMessage,
+            replyAll: replyToMessage,
+            canReply: canReplyToMessage,
+            forward: forwardMessage,
+            canForward: selectedNetworkIsActive,
+            moveIncomingToTrash: { id in
+                guard selectedMailbox?.contextID == nil else { return }
+                Task { await model.deleteIncomingMessage(id: id) }
+            },
+            moveOutgoingToTrash: { id in
+                guard selectedMailbox?.contextID == nil else { return }
+                Task { await model.deleteOutgoingMessage(id: id) }
+            },
+            restoreMessage: { id in
+                guard selectedMailbox?.contextID == nil else { return }
+                model.restoreMessage(id: id)
+            },
+            permanentlyDeleteIncoming: { id in
+                guard selectedMailbox?.contextID == nil else { return }
+                Task { await model.permanentlyDeleteIncomingMessage(id: id) }
+            },
+            permanentlyDeleteOutgoing: { id in
+                guard selectedMailbox?.contextID == nil else { return }
+                model.permanentlyDeleteOutgoingMessage(id: id)
+            }
         )
     }
 
+    @ViewBuilder
     private var messageDetail: some View {
-        MacDetailContent(
-            route: selectedDetailRoute,
-            incomingMessages: selectedIncomingMessages,
-            outgoingMessages: selectedOutgoingMessages,
-            memberDirectory: macMemberDirectory,
-            messageSearchText: $macMessageSearchText,
-            displayName: selectedDisplayName,
-            shouldMarkIncomingAsRead: selectedMailbox?.contextID == nil,
-            openIncomingMessage: model.openIncomingMessage
-        )
+        if case .network(let id) = selectedSidebarRoute {
+            BeakrSettingsView(bootstrap: bootstrap, embeddedNetworkID: id)
+                .id(id)
+                .navigationSplitViewColumnWidth(min: 420, ideal: 540, max: 800)
+        } else {
+            MacDetailContent(
+                bootstrap: bootstrap,
+                route: selectedDetailRoute,
+                incomingMessages: selectedIncomingMessages,
+                outgoingMessages: selectedOutgoingMessages,
+                memberDirectory: macMemberDirectory,
+                messageSearchText: $macMessageSearchText,
+                displayName: selectedDisplayName,
+                shouldMarkIncomingAsRead: selectedNetworkIsActive,
+                openIncomingMessage: model.openIncomingMessage
+            )
+        }
     }
 
     private var canReplyToSelectedMessage: Bool {
-        guard selectedMailbox?.contextID == nil,
-              case .incoming(let id) = selectedMessage,
+        guard case .incoming(let id) = selectedMessage else { return false }
+        return canReplyToMessage(id)
+    }
+
+    private func canReplyToMessage(_ id: UUID) -> Bool {
+        guard selectedNetworkIsActive,
               let source = selectedIncomingMessages.first(where: { $0.id == id })?.source else {
             return false
         }
@@ -374,7 +999,7 @@ struct ContentView: View {
     }
 
     private var canForwardSelectedMessage: Bool {
-        guard selectedMailbox?.contextID == nil, let selectedMessage else { return false }
+        guard selectedNetworkIsActive, let selectedMessage else { return false }
         switch selectedMessage {
         case .incoming(let id):
             return selectedIncomingMessages.contains(where: { $0.id == id })
@@ -383,18 +1008,81 @@ struct ContentView: View {
         }
     }
 
+    private var canModifySelectedMessage: Bool {
+        selectedNetworkIsActive && selectedMessage != nil
+    }
+
+    private func isMessageVisible(_ route: MacDetailRoute, in mailbox: MailboxSelection) -> Bool {
+        guard selectedMailbox == mailbox, let selection = route.messageSelection else { return false }
+        switch selection {
+        case .incoming(let id):
+            return selectedIncomingMessages.contains(where: { $0.id == id })
+        case .outgoing(let id):
+            return selectedOutgoingMessages.contains(where: { $0.id == id })
+        }
+    }
+
+    private func validateSelectedMessage() {
+        guard let mailbox = selectedMailbox,
+              let route = selectedDetailRoute,
+              route.messageSelection != nil,
+              !isMessageVisible(route, in: mailbox) else { return }
+        rememberedMailboxSelections[mailbox] = nil
+        selectedDetailRoute = nil
+    }
+
+    private var selectedMessageFlagColor: MessageFlagColor? {
+        guard let selectedMessage else { return nil }
+        switch selectedMessage {
+        case .incoming(let id), .outgoing(let id):
+            return model.flagColor(for: id)
+        }
+    }
+
+    private func deleteSelectedMessage() {
+        guard canModifySelectedMessage, let selectedMessage else { return }
+        selectedDetailRoute = nil
+        switch (selectedMailbox?.mailbox, selectedMessage) {
+        case (.trash, .incoming(let id)):
+            Task { await model.permanentlyDeleteIncomingMessage(id: id) }
+        case (.trash, .outgoing(let id)):
+            model.permanentlyDeleteOutgoingMessage(id: id)
+        case (_, .incoming(let id)):
+            Task { await model.deleteIncomingMessage(id: id) }
+        case (_, .outgoing(let id)):
+            Task { await model.deleteOutgoingMessage(id: id) }
+        }
+    }
+
+    private func setFlagOnSelectedMessage(_ color: MessageFlagColor?) {
+        guard canModifySelectedMessage, let selectedMessage else { return }
+        switch selectedMessage {
+        case .incoming(let id), .outgoing(let id):
+            model.setFlag(color, messageID: id)
+        }
+    }
+
     private func replyToSelectedMessage() {
-        guard case .incoming(let id) = selectedMessage,
-              let source = selectedIncomingMessages.first(where: { $0.id == id })?.source,
-              model.isAddressable(source) else { return }
-        model.prepareReply(to: source)
+        guard case .incoming(let id) = selectedMessage else { return }
+        replyToMessage(id)
+    }
+
+    private func replyToMessage(_ id: UUID) {
+        guard canReplyToMessage(id),
+              let message = selectedIncomingMessages.first(where: { $0.id == id }) else { return }
+        model.prepareReply(to: message)
         showingComposerDialog = true
     }
 
     private func forwardSelectedMessage() {
         guard let selectedMessage else { return }
+        forwardMessage(selectedMessage)
+    }
+
+    private func forwardMessage(_ message: MailMessageSelection) {
+        guard selectedNetworkIsActive else { return }
         let body: String?
-        switch selectedMessage {
+        switch message {
         case .incoming(let id):
             body = selectedIncomingMessages.first(where: { $0.id == id })?.body
         case .outgoing(let id):
@@ -406,16 +1094,45 @@ struct ContentView: View {
     }
 
     private var selectedIncomingMessages: [IncomingMessage] {
-        guard let contextID = selectedMailbox?.contextID else { return model.incomingMessages }
-        return bootstrap.archivedIncomingMessages[contextID] ?? []
+        let messages: [IncomingMessage]
+        let trashedIDs: Set<UUID>
+        if let contextID = selectedMailbox?.contextID {
+            messages = bootstrap.archivedIncomingMessages[contextID] ?? []
+            trashedIDs = bootstrap.archivedMailboxMetadata[contextID]?.trashedMessageIDs ?? []
+        } else if let networkID = selectedMailbox?.networkID, !selectedNetworkIsActive {
+            messages = bootstrap.storedIncomingMessages[networkID] ?? []
+            trashedIDs = bootstrap.storedMailboxMetadata[networkID]?.trashedMessageIDs ?? []
+        } else {
+            messages = model.incomingMessages
+            trashedIDs = model.trashedMessageIDs
+        }
+        return selectedMailbox?.mailbox == .trash
+            ? messages.filter { trashedIDs.contains($0.id) }
+            : messages.filter { !trashedIDs.contains($0.id) }
     }
 
     private var selectedOutgoingMessages: [OutgoingMessage] {
-        guard let contextID = selectedMailbox?.contextID,
-              let metadata = bootstrap.archivedMailboxMetadata[contextID] else {
-            return model.outgoingMessages
+        let messages: [OutgoingMessage]
+        if let contextID = selectedMailbox?.contextID,
+           let metadata = bootstrap.archivedMailboxMetadata[contextID] {
+            messages = metadata.outgoingMessages
+        } else if let networkID = selectedMailbox?.networkID,
+                  !selectedNetworkIsActive,
+                  let metadata = bootstrap.storedMailboxMetadata[networkID] {
+            messages = metadata.outgoingMessages
+        } else {
+            messages = model.outgoingMessages
         }
-        return metadata.outgoingMessages
+        guard let mailbox = selectedMailbox?.mailbox else { return messages }
+        let trashedIDs = selectedMailbox?.contextID.flatMap {
+            bootstrap.archivedMailboxMetadata[$0]?.trashedMessageIDs
+        } ?? selectedMailbox?.networkID.flatMap {
+            selectedNetworkIsActive ? nil : bootstrap.storedMailboxMetadata[$0]?.trashedMessageIDs
+        } ?? model.trashedMessageIDs
+        if mailbox == .trash {
+            return messages.filter { trashedIDs.contains($0.id) }
+        }
+        return messages.filter { !trashedIDs.contains($0.id) && mailbox.includes($0) }
     }
 
     private var macMemberDirectory: MacMemberDirectorySnapshot {
@@ -423,27 +1140,59 @@ struct ContentView: View {
             networks: bootstrap.networks,
             localDeviceName: bootstrap.deviceDisplayName,
             localDeviceID: bootstrap.nodeID,
+            savedMemberships: bootstrap.savedMemberships,
+            localNodeIDs: Dictionary(uniqueKeysWithValues: bootstrap.networkSessions.map { ($0.id, $0.profile.localNodeID.rawValue) }),
+            localDeviceOnline: bootstrap.state == .ready && bootstrap.activeNetworkConnectivity.isLocalDeviceOnline,
             activeNetworkMembers: bootstrap.networkMembers,
             onlineMemberIDs: bootstrap.onlineMemberIDs
         )
     }
 
     private func selectedDisplayName(for address: UUID) -> String {
-        guard let contextID = selectedMailbox?.contextID else {
-            return model.displayName(for: address)
+        if let contextID = selectedMailbox?.contextID {
+            return bootstrap.archivedMailboxMetadata[contextID]?
+                .recipients.first(where: { $0.id == address })?.name ?? address.uuidString
         }
-        return bootstrap.archivedMailboxMetadata[contextID]?
-            .recipients.first(where: { $0.id == address })?.name ?? address.uuidString
+        if let networkID = selectedMailbox?.networkID, !selectedNetworkIsActive {
+            return bootstrap.storedMailboxMetadata[networkID]?
+                .recipients.first(where: { $0.id == address })?.name ?? address.uuidString
+        }
+        return model.displayName(for: address)
     }
 
     private func selectedIsRead(_ messageID: UUID) -> Bool {
-        guard let contextID = selectedMailbox?.contextID else { return model.isRead(messageID) }
-        return bootstrap.archivedMailboxMetadata[contextID]?.readMessageIDs.contains(messageID) ?? false
+        if let contextID = selectedMailbox?.contextID {
+            return bootstrap.archivedMailboxMetadata[contextID]?.readMessageIDs.contains(messageID) ?? false
+        }
+        if let networkID = selectedMailbox?.networkID, !selectedNetworkIsActive {
+            return bootstrap.storedMailboxMetadata[networkID]?.readMessageIDs.contains(messageID) ?? false
+        }
+        return model.isRead(messageID)
     }
 
     private func selectedIsFlagged(_ messageID: UUID) -> Bool {
-        guard let contextID = selectedMailbox?.contextID else { return model.isFlagged(messageID) }
-        return bootstrap.archivedMailboxMetadata[contextID]?.flaggedMessageIDs.contains(messageID) ?? false
+        if let contextID = selectedMailbox?.contextID {
+            return bootstrap.archivedMailboxMetadata[contextID]?.flaggedMessageIDs.contains(messageID) ?? false
+        }
+        if let networkID = selectedMailbox?.networkID, !selectedNetworkIsActive {
+            return bootstrap.storedMailboxMetadata[networkID]?.flaggedMessageIDs.contains(messageID) ?? false
+        }
+        return model.isFlagged(messageID)
+    }
+
+    private func selectedFlagColor(_ messageID: UUID) -> MessageFlagColor? {
+        if let contextID = selectedMailbox?.contextID {
+            return bootstrap.archivedMailboxMetadata[contextID]?.messageFlagColors[messageID]
+        }
+        if let networkID = selectedMailbox?.networkID, !selectedNetworkIsActive {
+            return bootstrap.storedMailboxMetadata[networkID]?.messageFlagColors[messageID]
+        }
+        return model.flagColor(for: messageID)
+    }
+
+    private var selectedNetworkIsActive: Bool {
+        guard let networkID = selectedMailbox?.networkID else { return false }
+        return bootstrap.networks.contains { $0.id == networkID && $0.isActive }
     }
 
     private var contactsDialog: some View {
@@ -475,13 +1224,19 @@ struct ContentView: View {
                     messageText: $model.messageText,
                     canSend: model.canSend,
                     send: {
+                        // Sending clears the reply context, so capture navigation intent first.
+                        let preserveMailbox = model.hasReplyContext
                         Task {
                             await model.send()
                             if model.messageText.isEmpty {
                                 showingComposerDialog = false
-                                if let activeNetwork = bootstrap.networks.first(where: \.isActive) {
+                                if !preserveMailbox,
+                                   let activeNetwork = bootstrap.networks.first(where: \.isActive) {
+                                    let mailbox = model.outgoingMessages.first.map {
+                                        Mailbox.sentItems.includes($0) ? Mailbox.sentItems : Mailbox.outbox
+                                    } ?? .outbox
                                     selectedSidebarRoute = .mailbox(
-                                        MailboxSelection(networkID: activeNetwork.id, mailbox: .outbox)
+                                        MailboxSelection(networkID: activeNetwork.id, mailbox: mailbox)
                                     )
                                 }
                             }
@@ -508,8 +1263,19 @@ private struct MacNetworkSidebar: View {
     let bootstrap: NodeBootstrapModel
     let orderedNetworks: [NetworkSummary]
     @Binding var selection: MacSidebarRoute?
+    @Binding var selectedCategory: MacSidebarCategory
     let requestContextDeletion: (ContextSummary) -> Void
-    let openNetworkSettings: (NetworkSummary) -> Void
+    let showNetworkDetails: (NetworkSummary) -> Void
+    let openNetworkSettings: (NetworkSummary?) -> Void
+    @State private var showingAddNetwork = false
+    @State private var creatingNetwork = true
+    @State private var isShowingNetworkStatusInformation = false
+    @State private var networkPendingRemoval: NetworkSummary?
+
+    private var selectedNetworkForRemoval: NetworkSummary? {
+        guard let id = selection?.networkID else { return nil }
+        return orderedNetworks.first { $0.id == id }
+    }
 
     private var activeNetwork: NetworkSummary? {
         orderedNetworks.first(where: \.isActive)
@@ -520,6 +1286,9 @@ private struct MacNetworkSidebar: View {
             networks: orderedNetworks,
             localDeviceName: bootstrap.deviceDisplayName,
             localDeviceID: bootstrap.nodeID,
+            savedMemberships: bootstrap.savedMemberships,
+            localNodeIDs: Dictionary(uniqueKeysWithValues: bootstrap.networkSessions.map { ($0.id, $0.profile.localNodeID.rawValue) }),
+            localDeviceOnline: bootstrap.state == .ready && bootstrap.activeNetworkConnectivity.isLocalDeviceOnline,
             activeNetworkMembers: bootstrap.networkMembers,
             onlineMemberIDs: bootstrap.onlineMemberIDs
         )
@@ -527,12 +1296,36 @@ private struct MacNetworkSidebar: View {
 
     var body: some View {
         List(selection: $selection) {
-            Section("Networks") {
+            Text(
+                "Beakr'Net",
+                comment: "Product display name shown at the top of the macOS network sidebar."
+            )
+            .font(.title2.weight(.semibold))
+            .accessibilityAddTraits(.isHeader)
+
+            if bootstrap.state == .failed {
+                Text(bootstrap.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(nil)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("macStartupStatus")
+            }
+
+            Section {
                 ForEach(orderedNetworks) { network in
+                    let counts = mailboxCounts(for: network)
                     MacNetworkOverviewSection(
                         network: network,
-                        incomingCount: network.isActive ? model.incomingMessages.count : 0,
-                        outgoingCount: network.isActive ? model.outgoingMessages.count : 0,
+                        selection: $selection,
+                        selectedCategory: $selectedCategory,
+                        incomingCount: counts.incoming,
+                        outgoingCount: counts.outgoing,
+                        sentCount: counts.sent,
+                        trashCount: counts.trash,
                         onlineMemberCount: memberDirectory.members(
                             networkID: network.id,
                             availability: .online
@@ -542,25 +1335,66 @@ private struct MacNetworkSidebar: View {
                             availability: .offline
                         ).count,
                         activeConnectivity: bootstrap.activeNetworkConnectivity,
-                        membersAreAvailable: network.isActive
+                        authorityHostingState: bootstrap.authorityHostingStates[network.id],
+                        authorityHostingEnabled: bootstrap.authorityHostingEnabled.contains(network.id),
+                        authorityHostingBusy: bootstrap.authorityHostingBusy,
+                        setAuthorityHosting: { enabled in
+                            Task { await bootstrap.setAuthorityHosting(enabled, for: network.id) }
+                        },
+                        membersAreAvailable: network.isActive,
+                        showDetails: { showNetworkDetails(network) },
+                        makeActive: {
+                            guard !network.isActive else { return }
+                            Task { await bootstrap.switchNetwork(to: network.id) }
+                        },
+                        requestRemoval: { networkPendingRemoval = network }
                     )
                 }
+            } header: {
+                MacNetworksSectionHeader(
+                    showStatusInformation: { isShowingNetworkStatusInformation = true }
+                )
             }
 
             if !bootstrap.archivedContexts.isEmpty {
                 ForEach(bootstrap.archivedContexts) { context in
                     Section {
-                        Label("Inbox", systemImage: "tray")
+                        if context.archiveReason == .membershipRevoked {
+                            RevokedContextExplanation()
+                        }
+                        Label("Inbox", systemImage: "tray.and.arrow.down")
                             .font(.caption)
-                            .badge(bootstrap.archivedIncomingMessages[context.id]?.count ?? 0)
+                            .badge(bootstrap.archivedIncomingMessages[context.id]?.filter {
+                                !(bootstrap.archivedMailboxMetadata[context.id]?.trashedMessageIDs.contains($0.id) ?? false)
+                            }.count ?? 0)
                             .tag(MacSidebarRoute.mailbox(
                                 MailboxSelection(contextID: context.id, mailbox: .inbox)
                             ))
-                        Label("Outbox", systemImage: "paperplane")
+                        Label("Outbox", systemImage: "tray.and.arrow.up")
                             .font(.caption)
-                            .badge(bootstrap.archivedMailboxMetadata[context.id]?.outgoingMessages.count ?? 0)
+                            .badge(bootstrap.archivedMailboxMetadata[context.id]?.outgoingMessages
+                                .filter {
+                                    !(bootstrap.archivedMailboxMetadata[context.id]?.trashedMessageIDs.contains($0.id) ?? false)
+                                        && Mailbox.outbox.includes($0)
+                                }.count ?? 0)
                             .tag(MacSidebarRoute.mailbox(
                                 MailboxSelection(contextID: context.id, mailbox: .outbox)
+                            ))
+                        Label("Sent Items", systemImage: "paperplane")
+                            .font(.caption)
+                            .badge(bootstrap.archivedMailboxMetadata[context.id]?.outgoingMessages
+                                .filter {
+                                    !(bootstrap.archivedMailboxMetadata[context.id]?.trashedMessageIDs.contains($0.id) ?? false)
+                                        && Mailbox.sentItems.includes($0)
+                                }.count ?? 0)
+                            .tag(MacSidebarRoute.mailbox(
+                                MailboxSelection(contextID: context.id, mailbox: .sentItems)
+                            ))
+                        Label("Trash", systemImage: "trash")
+                            .font(.caption)
+                            .badge(bootstrap.archivedMailboxMetadata[context.id]?.trashedMessageIDs.count ?? 0)
+                            .tag(MacSidebarRoute.mailbox(
+                                MailboxSelection(contextID: context.id, mailbox: .trash)
                             ))
                     } header: {
                         Label(context.displayName, systemImage: "archivebox")
@@ -588,74 +1422,283 @@ private struct MacNetworkSidebar: View {
                 )
             }
         }
+        .sheet(isPresented: $isShowingNetworkStatusInformation) {
+            NetworkStatusInformationView()
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
+                HStack {
+                    Menu {
+                        Button("Create Network") {
+                            creatingNetwork = true
+                            showingAddNetwork = true
+                        }
+                        Button("Join Network") {
+                            creatingNetwork = false
+                            showingAddNetwork = true
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .menuIndicator(.hidden)
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .accessibilityLabel("Add Network")
+                    .help("Add Network — Create or Join")
+                    Button {
+                        networkPendingRemoval = selectedNetworkForRemoval
+                    } label: {
+                        Image(systemName: "minus")
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("removeSelectedNetworkButton")
+                    .disabled(selectedNetworkForRemoval == nil)
+                    .accessibilityLabel(selectedNetworkForRemoval?.isHostingAuthority == true ? "Delete Selected Network" : "Forget Selected Network")
+                    .help(selectedNetworkForRemoval.map {
+                        $0.isHostingAuthority ? "Delete \($0.displayName)…" : "Forget \($0.displayName)…"
+                    } ?? "Select a network to remove")
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
+            .background(.bar)
+        }
+        .alert(
+            networkPendingRemoval?.isHostingAuthority == true
+                ? "Delete Network?"
+                : "Forget Network on This Mac?",
+            isPresented: Binding(
+                get: { networkPendingRemoval != nil },
+                set: { if !$0 { networkPendingRemoval = nil } }
+            ),
+            presenting: networkPendingRemoval
+        ) { network in
+            if network.isHostingAuthority {
+                Button("Delete \(network.displayName)", role: .destructive) {
+                    networkPendingRemoval = nil
+                    Task { await bootstrap.deleteOwnedNetwork(network.id) }
+                }
+            } else {
+                Button("Forget and Keep Data", role: .destructive) {
+                    networkPendingRemoval = nil
+                    Task {
+                        await bootstrap.forgetJoinedNetwork(
+                            network.id,
+                            dataDisposition: .keepLocalData
+                        )
+                    }
+                }
+                Button("Forget and Delete Data", role: .destructive) {
+                    networkPendingRemoval = nil
+                    Task {
+                        await bootstrap.forgetJoinedNetwork(
+                            network.id,
+                            dataDisposition: .deleteLocalData
+                        )
+                    }
+                }
+            }
+            Button("Keep Network", role: .cancel) {}
+        } message: { network in
+            if network.isHostingAuthority {
+                Text("This permanently removes \(network.displayName), its management credentials, and its local data.")
+            } else {
+                Text(forgetNetworkMessage(
+                    for: network,
+                    deviceName: "Mac",
+                    connectivity: bootstrap.activeNetworkConnectivity
+                ))
+            }
+        }
+        .sheet(isPresented: $showingAddNetwork) {
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button("Done") { showingAddNetwork = false }
+                }
+                .padding()
+                NetworkManagerWindow(bootstrap: bootstrap, creatingNetwork: creatingNetwork) { createdID in
+                    selection = .network(createdID)
+                    showingAddNetwork = false
+                }
+            }
+            .frame(width: 620, height: 650)
+        }
         .listStyle(.sidebar)
         .navigationTitle("Beakr")
         .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 300)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    guard let activeNetwork else { return }
                     openNetworkSettings(activeNetwork)
                 } label: {
                     MacNetworkStatusIcon(
                         connectivity: bootstrap.activeNetworkConnectivity,
-                        systemImage: activeNetwork?.canManageNetwork == true
-                            ? "network.badge.shield.half.filled"
-                            : "network"
+                        systemImage: "gearshape.fill"
                     )
                     .font(.body)
                 }
                 .tint(bootstrap.activeNetworkConnectivity.networkTintColor)
-                .disabled(activeNetwork == nil)
-                .accessibilityLabel("Active Network")
-                .accessibilityValue(bootstrap.activeNetworkStatusTitle)
+                .accessibilityLabel("Network Settings")
+                .accessibilityValue(
+                    activeNetwork == nil
+                        ? (bootstrap.networks.isEmpty ? "No networks configured" : "Messaging off — no network selected")
+                        : bootstrap.activeNetworkStatusTitle
+                )
                 .help(
                     activeNetwork.map {
                         "Open settings for \($0.displayName) — \(bootstrap.activeNetworkStatusTitle)"
-                    } ?? "No active network"
+                    } ?? (bootstrap.networks.isEmpty
+                        ? "Open Network Settings to create or join a network"
+                        : "Open Network Settings — messaging is off because no network is selected for messaging")
                 )
             }
         }
     }
+
+    private func mailboxCounts(for network: NetworkSummary) -> NetworkMailboxCounts {
+        let incomingMessages: [IncomingMessage]
+        let outgoingMessages: [OutgoingMessage]
+        let trashedMessageIDs: Set<UUID>
+        if network.isActive {
+            incomingMessages = model.incomingMessages
+            outgoingMessages = model.outgoingMessages
+            trashedMessageIDs = model.trashedMessageIDs
+        } else {
+            incomingMessages = bootstrap.storedIncomingMessages[network.id] ?? []
+            let metadata = bootstrap.storedMailboxMetadata[network.id] ?? .empty
+            outgoingMessages = metadata.outgoingMessages
+            trashedMessageIDs = metadata.trashedMessageIDs
+        }
+        return NetworkMailboxCounts(
+            incoming: incomingMessages.lazy.filter { !trashedMessageIDs.contains($0.id) }.count,
+            outgoing: outgoingMessages.lazy.filter {
+                !trashedMessageIDs.contains($0.id) && Mailbox.outbox.includes($0)
+            }.count,
+            sent: outgoingMessages.lazy.filter {
+                !trashedMessageIDs.contains($0.id) && Mailbox.sentItems.includes($0)
+            }.count,
+            trash: trashedMessageIDs.count
+        )
+    }
+}
+
+private struct NetworkMailboxCounts {
+    let incoming: Int
+    let outgoing: Int
+    let sent: Int
+    let trash: Int
 }
 
 private struct MacContextList: View {
+    @AppStorage("net.beakr.settings.selectedTab") private var selectedSettingsTab = BeakrSettingsTab.networks.rawValue
+    let bootstrap: NodeBootstrapModel
     let sidebarRoute: MacSidebarRoute?
+    let networks: [NetworkSummary]
+    let selectedCategory: MacSidebarCategory
     @Binding var detailRoute: MacDetailRoute?
     let incomingMessages: [IncomingMessage]
     let outgoingMessages: [OutgoingMessage]
     let memberDirectory: MacMemberDirectorySnapshot
     let focus: FocusState<MacNavigationColumn?>.Binding
+    let canRemoveDevice: (MacMemberDetail) -> Bool
+    let requestDeviceRemoval: (MacMemberDetail) -> Void
     let displayName: (UUID) -> String
     let isRead: (UUID) -> Bool
+    let setRead: (Bool, UUID) -> Void
     let isFlagged: (UUID) -> Bool
+    let flagColor: (UUID) -> MessageFlagColor?
+    let setFlag: (MessageFlagColor?, UUID) -> Void
+    let reply: (UUID) -> Void
+    let replyAll: (UUID) -> Void
+    let canReply: (UUID) -> Bool
+    let forward: (MailMessageSelection) -> Void
+    let canForward: Bool
+    let moveIncomingToTrash: (UUID) -> Void
+    let moveOutgoingToTrash: (UUID) -> Void
+    let restoreMessage: (UUID) -> Void
+    let permanentlyDeleteIncoming: (UUID) -> Void
+    let permanentlyDeleteOutgoing: (UUID) -> Void
 
-    @ViewBuilder
     var body: some View {
+        Group {
+            switch sidebarRoute {
+            case .network:
+                MacSettingsSectionList()
+                    .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+            case .mailbox(let mailbox):
+                MacMessageList(
+                    mailbox: mailbox,
+                    detailRoute: $detailRoute,
+                    incomingMessages: incomingMessages,
+                    outgoingMessages: outgoingMessages,
+                    focus: focus,
+                    displayName: displayName,
+                    isRead: isRead,
+                    setRead: setRead,
+                    isFlagged: isFlagged,
+                    flagColor: flagColor,
+                    setFlag: setFlag,
+                    reply: reply,
+                    replyAll: replyAll,
+                    canReply: canReply,
+                    forward: forward,
+                    canForward: canForward,
+                    moveIncomingToTrash: moveIncomingToTrash,
+                    moveOutgoingToTrash: moveOutgoingToTrash,
+                    restoreMessage: restoreMessage,
+                    permanentlyDeleteIncoming: permanentlyDeleteIncoming,
+                    permanentlyDeleteOutgoing: permanentlyDeleteOutgoing
+                )
+            case .members(let networkID, let availability):
+                MacMemberList(
+                    members: memberDirectory.members(
+                        networkID: networkID,
+                        availability: availability
+                    ),
+                    availability: availability,
+                    focus: focus,
+                    detailRoute: $detailRoute,
+                    canRemoveDevice: canRemoveDevice,
+                    requestDeviceRemoval: requestDeviceRemoval
+                )
+            case nil:
+                ContentUnavailableView(
+                    "Select an Item",
+                    systemImage: "sidebar.left",
+                    description: Text("Choose a mailbox or member status from the sidebar.")
+                )
+            }
+        }
+        .navigationTitle(columnTitle)
+        .navigationSubtitle(columnSubtitle)
+    }
+
+    private var columnTitle: Text {
+        switch sidebarRoute {
+        case .network(let id): Text(networks.first(where: { $0.id == id })?.displayName ?? "Network")
+        case .mailbox(let mailbox): Text(mailbox.mailbox.title)
+        case .members(let id, let availability):
+            Text(memberDirectory.members(networkID: id, availability: availability).first?.isActiveNetwork == false
+                 ? "UnObserved" : availability.title)
+        case nil: Text("Select a Network")
+        }
+    }
+
+    private var columnSubtitle: Text {
         switch sidebarRoute {
         case .mailbox(let mailbox):
-            MacMessageList(
-                mailbox: mailbox,
-                detailRoute: $detailRoute,
-                incomingMessages: incomingMessages,
-                outgoingMessages: outgoingMessages,
-                focus: focus,
-                displayName: displayName,
-                isRead: isRead,
-                isFlagged: isFlagged
-            )
-        case .members(let networkID, let availability):
-            MacMemberList(
-                members: memberDirectory.members(
-                    networkID: networkID,
-                    availability: availability
-                ),
-                availability: availability,
-                focus: focus,
-                detailRoute: $detailRoute
-            )
-        case nil:
-            ContentUnavailableView("Select a Mailbox", systemImage: "sidebar.left")
+            let count = mailbox.mailbox == .inbox ? incomingMessages.count
+                : mailbox.mailbox == .trash ? incomingMessages.count + outgoingMessages.count : outgoingMessages.count
+            return count == 1 ? Text("1 message") : Text("\(count) messages")
+        case .members(let id, let availability):
+            let count = memberDirectory.members(networkID: id, availability: availability).count
+            return count == 1 ? Text("1 device") : Text("\(count) devices")
+        case .network, nil: return Text("")
         }
     }
 }
@@ -668,62 +1711,258 @@ private struct MacMessageList: View {
     let focus: FocusState<MacNavigationColumn?>.Binding
     let displayName: (UUID) -> String
     let isRead: (UUID) -> Bool
+    let setRead: (Bool, UUID) -> Void
     let isFlagged: (UUID) -> Bool
+    let flagColor: (UUID) -> MessageFlagColor?
+    let setFlag: (MessageFlagColor?, UUID) -> Void
+    let reply: (UUID) -> Void
+    let replyAll: (UUID) -> Void
+    let canReply: (UUID) -> Bool
+    let forward: (MailMessageSelection) -> Void
+    let canForward: Bool
+    let moveIncomingToTrash: (UUID) -> Void
+    let moveOutgoingToTrash: (UUID) -> Void
+    let restoreMessage: (UUID) -> Void
+    let permanentlyDeleteIncoming: (UUID) -> Void
+    let permanentlyDeleteOutgoing: (UUID) -> Void
+    @State private var selectedRoutes: Set<MacDetailRoute> = []
     @ScaledMetric(relativeTo: .body) private var messageRowMinimumHeight = 64
 
     var body: some View {
-        let messageCount = mailbox.mailbox == .inbox
-            ? incomingMessages.count
-            : outgoingMessages.count
-
-        List(selection: $detailRoute) {
-            switch mailbox.mailbox {
-            case .inbox:
-                ForEach(incomingMessages) { message in
-                    IncomingMailRow(
-                        sender: message.source.map(displayName) ?? "Unknown Sender",
-                        subject: message.subject,
-                        preview: message.preview,
-                        receivedAt: message.receivedAt,
-                        isRead: isRead(message.id),
-                        isFlagged: isFlagged(message.id)
-                    )
-                    .tag(MacDetailRoute.message(.incoming(message.id)))
-                }
-            case .outbox:
-                ForEach(outgoingMessages) { message in
-                    OutgoingMailRow(
-                        recipient: displayName(message.destination),
-                        messageBody: message.body,
-                        state: message.state,
-                        deliveredAt: message.deliveredAt,
-                        openedAt: message.openedAt
-                    )
-                    .tag(MacDetailRoute.message(.outgoing(message.id)))
-                }
-            }
+        List(selection: $selectedRoutes) {
+            messageRows
+        }
+        .contextMenu(forSelectionType: MacDetailRoute.self) { routes in
+            selectionContextMenu(for: routes)
+        }
+        .onChange(of: selectedRoutes) { _, routes in
+            synchronizeDetailRoute(with: routes)
+        }
+        .onChange(of: detailRoute, initial: true) { _, route in
+            synchronizeListSelection(with: route)
+        }
+        .onChange(of: mailbox) { _, _ in
+            synchronizeListSelection(with: detailRoute)
         }
         .environment(\.defaultMinListRowHeight, messageRowMinimumHeight)
         .focused(focus, equals: .content)
         .listStyle(.inset)
         .overlay {
             if mailbox.mailbox == .inbox && incomingMessages.isEmpty {
-                MacColumnEmptyState("No Items", systemImage: "tray")
-            } else if mailbox.mailbox == .outbox && outgoingMessages.isEmpty {
-                MacColumnEmptyState("No Items", systemImage: "paperplane")
+                MacColumnEmptyState("No Items", systemImage: "tray.and.arrow.down")
+            } else if mailbox.mailbox == .trash && incomingMessages.isEmpty && outgoingMessages.isEmpty {
+                MacColumnEmptyState("No Items", systemImage: "trash")
+            } else if mailbox.mailbox != .inbox && mailbox.mailbox != .trash && outgoingMessages.isEmpty {
+                MacColumnEmptyState("No Items", systemImage: mailbox.mailbox.systemImage)
             }
         }
-        .navigationTitle(Text(mailbox.mailbox.title))
-        .navigationSubtitle(messageCount == 1 ? "1 message" : "\(messageCount) messages")
         .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 440)
+    }
+
+    @ViewBuilder
+    private var messageRows: some View {
+        switch mailbox.mailbox {
+        case .inbox:
+            incomingMessageRows
+        case .outbox, .sentItems:
+            outgoingMessageRows
+        case .trash:
+            trashedIncomingMessageRows
+            trashedOutgoingMessageRows
+        }
+    }
+
+    private var incomingMessageRows: some View {
+        ForEach(incomingMessages) { message in
+            IncomingMailRow(
+                sender: message.source.map(displayName) ?? "Unknown Sender",
+                subject: message.subject,
+                preview: message.preview,
+                receivedAt: message.receivedAt,
+                isRead: isRead(message.id),
+                isFlagged: isFlagged(message.id),
+                flagColor: flagColor(message.id)
+            )
+            .tag(MacDetailRoute.message(.incoming(message.id)))
+        }
+    }
+
+    private var outgoingMessageRows: some View {
+        ForEach(outgoingMessages) { message in
+            OutgoingMailRow(
+                recipient: displayName(message.destination),
+                messageBody: message.body,
+                state: message.state,
+                deliveredAt: message.deliveredAt,
+                openedAt: message.openedAt,
+                isFlagged: isFlagged(message.id),
+                flagColor: flagColor(message.id)
+            )
+            .tag(MacDetailRoute.message(.outgoing(message.id)))
+        }
+    }
+
+    private var trashedIncomingMessageRows: some View {
+        ForEach(incomingMessages) { message in
+            IncomingMailRow(
+                sender: message.source.map(displayName) ?? "Unknown Sender",
+                subject: message.subject,
+                preview: message.preview,
+                receivedAt: message.receivedAt,
+                isRead: isRead(message.id),
+                isFlagged: isFlagged(message.id),
+                flagColor: flagColor(message.id)
+            )
+            .tag(MacDetailRoute.message(.incoming(message.id)))
+        }
+    }
+
+    private var trashedOutgoingMessageRows: some View {
+        ForEach(outgoingMessages) { message in
+            OutgoingMailRow(
+                recipient: displayName(message.destination),
+                messageBody: message.body,
+                state: message.state,
+                deliveredAt: message.deliveredAt,
+                openedAt: message.openedAt,
+                isFlagged: isFlagged(message.id),
+                flagColor: flagColor(message.id)
+            )
+            .tag(MacDetailRoute.message(.outgoing(message.id)))
+        }
+    }
+
+    @ViewBuilder
+    private func selectionContextMenu(for routes: Set<MacDetailRoute>) -> some View {
+        let incomingIDs = incomingMessageIDs(in: routes)
+        let outgoingIDs = outgoingMessageIDs(in: routes)
+        let messageIDs = incomingIDs + outgoingIDs
+        let allIncomingAreRead = !incomingIDs.isEmpty && incomingIDs.allSatisfy(isRead)
+
+        if routes.count == 1, let route = routes.first {
+            Button("Open") {
+                detailRoute = route
+            }
+
+            if mailbox.contextID == nil, !incomingIDs.isEmpty {
+                if let id = incomingIDs.first {
+                    Button("Reply") { reply(id) }
+                        .disabled(!canReply(id))
+                    Button("Reply All") { replyAll(id) }
+                        .disabled(!canReply(id))
+                    Button("Forward") { forward(.incoming(id)) }
+                        .disabled(!canForward)
+                }
+            }
+
+            Divider()
+        }
+
+        if mailbox.contextID == nil, !incomingIDs.isEmpty {
+            Button(
+                allIncomingAreRead ? "Mark as Unread" : "Mark as Read",
+                systemImage: allIncomingAreRead ? "envelope.badge" : "envelope.open"
+            ) {
+                incomingIDs.forEach { setRead(!allIncomingAreRead, $0) }
+            }
+        }
+
+        if mailbox.contextID == nil, !routes.isEmpty {
+            if mailbox.mailbox == .trash {
+                Button("Restore", systemImage: "arrow.uturn.backward") {
+                    incomingIDs.forEach(restoreMessage)
+                    outgoingIDs.forEach(restoreMessage)
+                }
+                Button("Delete Permanently", systemImage: "trash.slash", role: .destructive) {
+                    incomingIDs.forEach(permanentlyDeleteIncoming)
+                    outgoingIDs.forEach(permanentlyDeleteOutgoing)
+                }
+            } else {
+                Button("Delete", systemImage: "trash") {
+                    incomingIDs.forEach(moveIncomingToTrash)
+                    outgoingIDs.forEach(moveOutgoingToTrash)
+                }
+            }
+
+            Divider()
+
+            Text("Flag:")
+            ControlGroup {
+                Button {
+                    messageIDs.forEach { setFlag(nil, $0) }
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .help("Clear Flag")
+
+                ForEach(MessageFlagColor.appleMailMenuOrder, id: \.self) { color in
+                    Button {
+                        messageIDs.forEach { setFlag(color, $0) }
+                    } label: {
+                        Image(nsImage: color.macFlagImage)
+                    }
+                    .help(String(localized: color.title))
+                }
+            }
+            .controlGroupStyle(.palette)
+        }
+    }
+
+    private func synchronizeDetailRoute(with routes: Set<MacDetailRoute>) {
+        if routes.isEmpty {
+            if detailRoute?.messageSelection != nil {
+                detailRoute = nil
+            }
+        } else if let detailRoute, routes.contains(detailRoute) {
+            return
+        } else {
+            detailRoute = orderedRoutes.first(where: routes.contains)
+        }
+    }
+
+    private func synchronizeListSelection(with route: MacDetailRoute?) {
+        guard let route, orderedRoutes.contains(route) else {
+            selectedRoutes = []
+            return
+        }
+        if !selectedRoutes.contains(route) {
+            selectedRoutes = [route]
+        }
+    }
+
+    private var orderedRoutes: [MacDetailRoute] {
+        switch mailbox.mailbox {
+        case .inbox:
+            incomingMessages.map { .message(.incoming($0.id)) }
+        case .outbox, .sentItems:
+            outgoingMessages.map { .message(.outgoing($0.id)) }
+        case .trash:
+            incomingMessages.map { .message(.incoming($0.id)) }
+                + outgoingMessages.map { .message(.outgoing($0.id)) }
+        }
+    }
+
+    private func incomingMessageIDs(in routes: Set<MacDetailRoute>) -> [UUID] {
+        incomingMessages.compactMap { message in
+            routes.contains(.message(.incoming(message.id))) ? message.id : nil
+        }
+    }
+
+    private func outgoingMessageIDs(in routes: Set<MacDetailRoute>) -> [UUID] {
+        outgoingMessages.compactMap { message in
+            routes.contains(.message(.outgoing(message.id))) ? message.id : nil
+        }
     }
 }
 
 private struct MacMemberList: View {
+    @State private var appleNetworkSnapshot = AppleNetworkSnapshot.unknown
     let members: [MacMemberDetail]
     let availability: MacMemberAvailability
     let focus: FocusState<MacNavigationColumn?>.Binding
     @Binding var detailRoute: MacDetailRoute?
+    let canRemoveDevice: (MacMemberDetail) -> Bool
+    let requestDeviceRemoval: (MacMemberDetail) -> Void
 
     var body: some View {
         List(members, selection: $detailRoute) { member in
@@ -737,11 +1976,18 @@ private struct MacMemberList: View {
                         .fontWeight(.semibold)
                 }
 
-                Text(member.isLocalDevice ? "This Device" : member.deviceID.uuidString)
-                    .font(.caption)
+                let address = (member.isLocalDevice ? appleNetworkSnapshot.localIPv4Address : (member.isOnline ? member.deviceIPAddress : nil)) ?? "--"
+                Text(member.isLocalDevice
+                     ? LocalizedStringResource("This Device IP: \(address)")
+                     : LocalizedStringResource("Device IP: \(address)"))
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .help((member.isLocalDevice ? appleNetworkSnapshot.localIPv4Address : member.deviceIPAddress) ?? "--")
 
+                if let notice = member.membershipNotice {
+                    Text(notice).font(.caption).foregroundStyle(.secondary)
+                }
                 if !member.isOnline, let lastSeen = member.lastSeen {
                     Text("Last seen \(lastSeen, format: .relative(presentation: .named))")
                         .font(.caption)
@@ -751,7 +1997,17 @@ private struct MacMemberList: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .tag(MacDetailRoute.device(member.networkID, member.deviceID))
             .accessibilityElement(children: .combine)
-            .accessibilityValue(member.isOnline ? "Online" : "Offline")
+            .accessibilityValue(!member.isActiveNetwork ? "UnObserved" : (member.isOnline ? "Online" : "Offline"))
+            .contextMenu {
+                Button(
+                    "Remove from Network…",
+                    systemImage: "person.crop.circle.badge.xmark",
+                    role: .destructive
+                ) {
+                    requestDeviceRemoval(member)
+                }
+                .disabled(!canRemoveDevice(member))
+            }
         }
         .focused(focus, equals: .content)
         .listStyle(.inset)
@@ -763,8 +2019,13 @@ private struct MacMemberList: View {
                 )
             }
         }
-        .navigationTitle(availability.title)
-        .navigationSubtitle(members.count == 1 ? "1 device" : "\(members.count) devices")
+        .task {
+            for await path in CurrentInternetRouteProbe.updates() {
+                let snapshot = await AppleNetworkSnapshot.capture(path: path)
+                guard !Task.isCancelled else { return }
+                appleNetworkSnapshot = snapshot
+            }
+        }
         .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 440)
     }
 }
@@ -792,6 +2053,7 @@ private struct MacColumnEmptyState: View {
 }
 
 private struct MacDetailContent: View {
+    let bootstrap: NodeBootstrapModel
     let route: MacDetailRoute?
     let incomingMessages: [IncomingMessage]
     let outgoingMessages: [OutgoingMessage]
@@ -820,7 +2082,7 @@ private struct MacDetailContent: View {
             )
         case .device(let networkID, let deviceID):
             if let member = memberDirectory.member(networkID: networkID, deviceID: deviceID) {
-                MacDeviceProperties(member: member)
+                MacDeviceProperties(member: member, directory: memberDirectory, bootstrap: bootstrap)
             } else {
                 ContentUnavailableView("Device Unavailable", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
             }
@@ -853,7 +2115,7 @@ private struct MacMessageDetail: View {
                     metadata: message.receivedAt.formatted(date: .abbreviated, time: .shortened),
                     messageBody: message.body
                 )
-                .task {
+                .task(id: message.id) {
                     if shouldMarkIncomingAsRead {
                         await openIncomingMessage(message)
                     }
@@ -891,7 +2153,7 @@ private struct MessageListToolbar: ToolbarContent {
                     .help("Message filtering is not yet available")
 
                 Menu("More", systemImage: "ellipsis") {
-                    Button("Refresh", systemImage: "arrow.clockwise", action: refresh)
+                    Button("Refresh Network Credentials", systemImage: "arrow.clockwise", action: refresh)
                         .keyboardShortcut("r", modifiers: .command)
 
                     Button("Contacts", systemImage: "person.2", action: showContacts)
@@ -922,21 +2184,27 @@ private struct MessageListToolbar: ToolbarContent {
 }
 
 private struct MessageBodyToolbar: ToolbarContent {
-    let compose: () -> Void
     let reply: () -> Void
     let replyAll: () -> Void
     let forward: () -> Void
+    let delete: () -> Void
+    let setFlag: (MessageFlagColor?) -> Void
     let canReply: Bool
     let canForward: Bool
+    let canDelete: Bool
+    let canFlag: Bool
+    let flagColor: MessageFlagColor?
+
+    @ViewBuilder
+    private var toolbarFlagIcon: some View {
+        if let flagColor {
+            Image(nsImage: flagColor.macFlagImage)
+        } else {
+            Image(systemName: "flag")
+        }
+    }
 
     var body: some ToolbarContent {
-        ToolbarItem(placement: .automatic) {
-            Button("Compose", systemImage: "square.and.pencil", action: compose)
-                .keyboardShortcut("n", modifiers: .command)
-                .help("Compose a new message")
-        }
-        ToolbarSpacer(.fixed)
-
         ToolbarItem(placement: .automatic) {
             ControlGroup {
                 Button("Reply", systemImage: "arrowshape.turn.up.left", action: reply)
@@ -962,9 +2230,9 @@ private struct MessageBodyToolbar: ToolbarContent {
                     .disabled(true)
                     .help("Move is not yet available")
 
-                Button("Delete", systemImage: "trash") {}
-                    .disabled(true)
-                    .help("Delete is not yet available")
+                Button("Delete", systemImage: "trash", role: .destructive, action: delete)
+                    .disabled(!canDelete)
+                    .help("Move the selected message to Trash")
 
                 Button("Move to Junk", systemImage: "xmark.bin") {}
                     .disabled(true)
@@ -985,32 +2253,68 @@ private struct MessageBodyToolbar: ToolbarContent {
         ToolbarSpacer(.fixed)
 
         ToolbarItem(placement: .automatic) {
-            Menu("Flag", systemImage: "flag.fill") {
-                Text("Flag colors are not yet available")
+            ControlGroup {
+                Button {
+                    setFlag(flagColor == nil ? .orange : nil)
+                } label: {
+                    toolbarFlagIcon
+                }
+                .help(flagColor == nil ? "Flag the selected message" : "Clear the selected message’s flag")
+
+                Menu {
+                    Picker(
+                        "Flag Colour",
+                        selection: Binding(
+                            get: { flagColor },
+                            set: { setFlag($0) }
+                        )
+                    ) {
+                        ForEach(MessageFlagColor.appleMailMenuOrder, id: \.self) { color in
+                            Label {
+                                Text(color.title)
+                            } icon: {
+                                Image(nsImage: color.macFlagImage)
+                            }
+                            .tag(Optional(color))
+                        }
+                    }
+                    .pickerStyle(.inline)
+
+                    Divider()
+
+                    Button("Clear Flag") {
+                        setFlag(nil)
+                    }
+                    .disabled(flagColor == nil)
+
+                    Button("Toggle Flag") {
+                        setFlag(flagColor == nil ? .orange : nil)
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .accessibilityLabel("Flag options")
+                }
+                .menuIndicator(.hidden)
+                .help("Choose a flag colour")
             }
-            .disabled(true)
-            .help("Flagging is not yet available")
+            .controlGroupStyle(.navigation)
+            .disabled(!canFlag)
         }
+        .sharedBackgroundVisibility(.visible)
     }
 }
 
 private struct DevicePropertiesToolbar: ToolbarContent {
-    let forgetDevice: () -> Void
-    let canForgetDevice: Bool
+    let removeDevice: () -> Void
+    let canRemoveDevice: Bool
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .automatic) {
-            Button("Forget Device", systemImage: "person.crop.circle.badge.minus", action: forgetDevice)
-                .disabled(!canForgetDevice)
-                .help(canForgetDevice ? "Forget cached information for this device" : "A device must be offline before it can be forgotten")
-        }
-    }
-}
-
-private struct EmptyDetailToolbar: ToolbarContent {
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .automatic) {
-            EmptyView()
+            Menu("Device Actions", systemImage: "ellipsis.circle") {
+                Button("Remove from Network…", systemImage: "person.crop.circle.badge.xmark", role: .destructive, action: removeDevice)
+                    .disabled(!canRemoveDevice)
+            }
+            .help("Device actions")
         }
     }
 }
@@ -1018,90 +2322,266 @@ private struct EmptyDetailToolbar: ToolbarContent {
 enum BeakrSettingsTab: String {
     case device
     case networks
+    case services
 }
 
-private enum NetworkSettingsPane: String {
-    case information
-    case invitations
+private struct MacSettingsSectionList: View {
+    @AppStorage("net.beakr.settings.selectedTab") private var selectedTab = BeakrSettingsTab.networks.rawValue
+
+    var body: some View {
+        List(selection: $selectedTab) {
+            Label("This Device", systemImage: "desktopcomputer")
+                .tag(BeakrSettingsTab.device.rawValue)
+            Label("Network", systemImage: "network")
+                .tag(BeakrSettingsTab.networks.rawValue)
+            Label("Services", systemImage: "square.stack.3d.up")
+                .tag(BeakrSettingsTab.services.rawValue)
+        }
+        .listStyle(.sidebar)
+        .accessibilityIdentifier("columnTwoSettingsList")
+    }
 }
 
 @MainActor
 struct BeakrSettingsView: View {
+    private let embeddedNetworkID: NetworkProfileID?
     @State private var bootstrap: NodeBootstrapModel
+    @State private var friendlyNameDraft = ""
+    @State private var isApplyingName = false
+    @State private var isRenamingDevice = false
+    @State private var nameFeedback: String?
     @AppStorage("net.beakr.settings.selectedTab") private var selectedTab = BeakrSettingsTab.networks.rawValue
     @AppStorage(ApplicationLANRuntimeManager.remembersPreviouslyConnectedDevicesKey)
     private var remembersPreviouslyConnectedDevices = true
 
-    init(bootstrap: NodeBootstrapModel) {
+    init(bootstrap: NodeBootstrapModel, embeddedNetworkID: NetworkProfileID? = nil) {
         _bootstrap = State(initialValue: bootstrap)
+        self.embeddedNetworkID = embeddedNetworkID
     }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            Form {
-                DeviceDetailsSection(
-                    friendlyName: $bootstrap.deviceFriendlyName,
-                    nodeID: bootstrap.nodeID,
-                    state: bootstrap.state,
-                    statusMessage: bootstrap.statusMessage,
-                    applyFriendlyName: { Task { await bootstrap.applyDeviceFriendlyName() } }
-                )
-                Section("Remembered Devices") {
-                    Toggle("Remember previously connected devices", isOn: $remembersPreviouslyConnectedDevices)
-                    Text("Keeps authenticated device names and last-seen information available while devices are offline. Message history is unaffected.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .formStyle(.grouped)
-            .frame(minWidth: 620, minHeight: 430)
-            .accessibilityIdentifier("deviceSettings")
-            .tabItem {
-                Label("Device", systemImage: "desktopcomputer")
-            }
-            .tag(BeakrSettingsTab.device.rawValue)
+        Group {
+            if embeddedNetworkID != nil {
+                settingsDetail
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .navigationTitle(sectionTitle)
+                    .navigationSubtitle("")
+            } else {
+                HSplitView {
+                    List(selection: $selectedTab) {
+                        Label("This Device", systemImage: "desktopcomputer")
+                            .tag(BeakrSettingsTab.device.rawValue)
+                        Label("Networks", systemImage: "network")
+                            .tag(BeakrSettingsTab.networks.rawValue)
+                        Label("Services", systemImage: "square.stack.3d.up")
+                            .tag(BeakrSettingsTab.services.rawValue)
+                    }
+                    .listStyle(.sidebar)
+                    .frame(minWidth: 170, idealWidth: 200, maxWidth: 260)
+                    .accessibilityIdentifier("settingsPanePicker")
 
-            NetworkManagerWindow(bootstrap: bootstrap)
-                .accessibilityIdentifier("networkSettings")
-                .tabItem {
-                    Label("Networks", systemImage: "network")
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack {
+                            Text("This Mac: \(bootstrap.deviceDisplayName)")
+                                .font(.headline)
+                            Spacer()
+                        }
+                        .padding()
+                        Divider()
+                        settingsDetail
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .frame(minWidth: 540)
                 }
-                .tag(BeakrSettingsTab.networks.rawValue)
+                .frame(minWidth: 760, idealWidth: 900, maxWidth: .infinity,
+                       minHeight: 560, idealHeight: 650, maxHeight: .infinity)
+            }
         }
-        .frame(minWidth: 760, idealWidth: 820, minHeight: 520, idealHeight: 600)
         .onChange(of: remembersPreviouslyConnectedDevices, initial: true) { _, enabled in
             Task { await bootstrap.setRemembersPreviouslyConnectedDevices(enabled) }
         }
+    }
+
+    private var sectionTitle: Text {
+        switch BeakrSettingsTab(rawValue: selectedTab) ?? .networks {
+        case .device: Text("This Device")
+        case .networks: Text("Network")
+        case .services: Text("Services")
+        }
+    }
+
+    @ViewBuilder
+    private var settingsDetail: some View {
+        switch BeakrSettingsTab(rawValue: selectedTab) ?? .networks {
+        case .device:
+            Form {
+                Section("This Device") {
+                    LabeledContent("Friendly Name") {
+                        HStack {
+                            Text(bootstrap.deviceDisplayName)
+                            Button("Rename Device", systemImage: "pencil") {
+                                friendlyNameDraft = bootstrap.deviceDisplayName
+                                isRenamingDevice = true
+                            }
+                            .labelStyle(.iconOnly)
+                            .help("Rename Device")
+                            .disabled(isApplyingName)
+                        }
+                    }
+                    if let nameFeedback {
+                        Text(nameFeedback).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("This name identifies this Mac. Network identities and membership are shown under Networks.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Device Discovery Preferences") {
+                    Toggle("Remember previously connected devices", isOn: $remembersPreviouslyConnectedDevices)
+                    Text("Keeps authenticated device names and last-seen information available while devices are offline. Message history is unaffected.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            .accessibilityIdentifier("deviceSettings")
+            .alert("Rename Device", isPresented: $isRenamingDevice) {
+                TextField("Friendly Name", text: $friendlyNameDraft)
+                Button("Cancel", role: .cancel) {}
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    isApplyingName = true
+                    bootstrap.deviceFriendlyName = friendlyNameDraft
+                    Task {
+                        await bootstrap.applyDeviceFriendlyName()
+                        nameFeedback = bootstrap.statusMessage
+                        isApplyingName = false
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(isApplyingName || friendlyNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        case .networks:
+            NetworkManagerWindow(
+                bootstrap: bootstrap,
+                embeddedNetworkID: embeddedNetworkID
+            )
+                .accessibilityIdentifier("networkSettings")
+        case .services:
+            MessagingServicesView(bootstrap: bootstrap)
+        }
+    }
+}
+
+@MainActor
+private struct AuthorityHostingControls: View {
+    let bootstrap: NodeBootstrapModel
+    let profileID: NetworkProfileID
+
+    private var isAuthorityOn: Bool {
+        let state = bootstrap.authorityHostingStates[profileID] ?? .stopped
+        return state == .running || state == .stopping
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Network Authority")
+                Spacer()
+                Text(isAuthorityOn ? "On" : "Off")
+                Toggle("Authority Service", isOn: Binding(
+                    get: { isAuthorityOn },
+                    set: { enabled in
+                        Task { await bootstrap.setAuthorityHosting(enabled, for: profileID) }
+                    }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .disabled(bootstrap.authorityHostingBusy)
+            }
+            if let failure = bootstrap.authorityHostingFailures[profileID] {
+                Text(failure)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("On: This device provides the network’s Authority Service. It can process device registration requests and supply updated credentials and revocation records.")
+                Text("Off: Authority Services are not available from this device. Devices with valid credentials and current revocation records may continue to function. Devices requiring updates will have to wait until an Authority Service comes online.")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 @MainActor
 struct NetworkManagerWindow: View {
+    @Environment(\.dismiss) private var dismiss
+    private let onNetworkCreated: ((NetworkProfileID) -> Void)?
+    private let creatingNetwork: Bool?
+    private let embeddedNetworkID: NetworkProfileID?
     @State private var bootstrap: NodeBootstrapModel
     @AppStorage("net.beakr.networkManager.selectedNetworkID") private var persistedNetworkID = ""
-    @SceneStorage("net.beakr.networkManager.columnVisibility") private var persistedColumnVisibility = "all"
     @State private var selectedNetworkID: NetworkProfileID?
     @State private var editorMode: NetworkEditorMode = .details
     @State private var editedName = ""
-    @State private var displayedInvitationJSON = ""
-    @AppStorage("net.beakr.settings.networkPane") private var selectedPane = NetworkSettingsPane.information.rawValue
+    @State private var isRenamingNetwork = false
+    private var displayedInvitationJSON: String {
+        selectedNetwork.map { bootstrap.administration(for: $0.id).invitationJSON } ?? ""
+    }
+    @AppStorage("net.beakr.settings.networkRequest") private var networkSettingsRequest = ""
     @State private var pendingDeletion: OwnedNetworkSummary?
     @State private var pendingDeparture: NetworkSummary?
-    @FocusState private var networkListIsFocused: Bool
+    @State private var pendingAuthorityReset: NetworkSummary?
+    @State private var creationAttempted = false
+    @State private var presentedSectionInformation: NetworkSectionInformation?
 
-    init(bootstrap: NodeBootstrapModel) {
+    init(bootstrap: NodeBootstrapModel, embeddedNetworkID: NetworkProfileID? = nil, creatingNetwork: Bool? = nil, onNetworkCreated: ((NetworkProfileID) -> Void)? = nil) {
         _bootstrap = State(initialValue: bootstrap)
+        self.onNetworkCreated = onNetworkCreated
+        self.creatingNetwork = creatingNetwork
+        self.embeddedNetworkID = embeddedNetworkID
+        _selectedNetworkID = State(initialValue: embeddedNetworkID)
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: columnVisibility) {
-            networkSidebar
-        } detail: {
-            detailContent
-        }
+        detailContent
         .accessibilityIdentifier("networkManagerWindow")
-        .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 700, minHeight: 480)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .sheet(item: $presentedSectionInformation) { information in
+            NetworkSectionInformationView(information: information)
+        }
+        .alert(
+            "Are you sure you want to reset the Network Authority?",
+            isPresented: Binding(
+                get: { pendingAuthorityReset != nil },
+                set: { if !$0 { pendingAuthorityReset = nil } }
+            ),
+            presenting: pendingAuthorityReset
+        ) { network in
+            Button("Reset Authority", role: .destructive) {
+                pendingAuthorityReset = nil
+                Task { await bootstrap.resetOwnedNetworkAuthority(network.id) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { network in
+            Text("Reset invalidates existing device access credentials for \(network.displayName) and creates new authority credentials on this device. Every other device must join again with a new invitation. Existing invitations and pending join requests become invalid.\n\nStored messages and other application data are not deleted.")
+        }
+        .alert(
+            "Rename Network",
+            isPresented: $isRenamingNetwork,
+            presenting: selectedNetwork
+        ) { network in
+            TextField("Network Name", text: $editedName)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") { rename(network) }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canRename(network))
+        } message: { network in
+            Text("Enter a new name for \(network.displayName).")
+        }
         .confirmationDialog(
             "Delete Network?",
             isPresented: Binding(
@@ -1125,9 +2605,23 @@ struct NetworkManagerWindow: View {
             ),
             presenting: pendingDeparture
         ) { network in
-            Button("Forget \(network.displayName)", role: .destructive) {
+            Button("Forget and Keep Data", role: .destructive) {
                 pendingDeparture = nil
-                Task { await bootstrap.forgetJoinedNetwork(network.id) }
+                Task {
+                    await bootstrap.forgetJoinedNetwork(
+                        network.id,
+                        dataDisposition: .keepLocalData
+                    )
+                }
+            }
+            Button("Forget and Delete Data", role: .destructive) {
+                pendingDeparture = nil
+                Task {
+                    await bootstrap.forgetJoinedNetwork(
+                        network.id,
+                        dataDisposition: .deleteLocalData
+                    )
+                }
             }
             Button("Keep Network", role: .cancel) {}
         } message: { network in
@@ -1137,91 +2631,43 @@ struct NetworkManagerWindow: View {
                 connectivity: bootstrap.activeNetworkConnectivity
             ))
         }
-        .onAppear { restoreSelection() }
-        .defaultFocus($networkListIsFocused, true)
-        .onChange(of: selectedNetworkID) { _, selection in
-            persistedNetworkID = selection?.rawValue.uuidString ?? ""
-            editorMode = .details
-            editedName = selectedNetwork?.displayName ?? ""
-            displayedInvitationJSON = selectedNetwork?.isActive == true ? bootstrap.invitationJSON : ""
-        }
-        .onChange(of: bootstrap.invitationJSON) { _, invitation in
-            displayedInvitationJSON = invitation
-        }
-        .onChange(of: bootstrap.networks) { _, _ in
-            if editorMode != .details,
-               let activeNetwork = bootstrap.networks.first(where: \.isActive) {
-                selectedNetworkID = activeNetwork.id
+        .onAppear {
+            if let creatingNetwork {
+                if creatingNetwork { bootstrap.prepareForNetworkCreation() }
+                editorMode = creatingNetwork ? .create : .join
             } else {
                 restoreSelection()
             }
         }
-    }
-
-    private var columnVisibility: Binding<NavigationSplitViewVisibility> {
-        Binding(
-            get: { persistedColumnVisibility == "detailOnly" ? .detailOnly : .all },
-            set: { persistedColumnVisibility = $0 == .detailOnly ? "detailOnly" : "all" }
-        )
-    }
-
-    private var networkSidebar: some View {
-        List(bootstrap.networks, selection: $selectedNetworkID) { network in
-            HStack(spacing: 10) {
-                if network.isActive {
-                    MacNetworkStatusIcon(
-                        connectivity: bootstrap.activeNetworkConnectivity,
-                        systemImage: network.canManageNetwork ? "network.badge.shield.half.filled" : "network"
-                    )
-                } else {
-                    Image(systemName: network.canManageNetwork ? "network.badge.shield.half.filled" : "network")
-                        .foregroundStyle(.secondary)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(network.displayName)
-                    Text(network.isHostingAuthority ? "Authority hosted on this Mac" : "Authority hosted elsewhere")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if network.isActive {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .accessibilityLabel("Active")
-                }
-            }
-            .tag(network.id)
+        .task(id: selectedNetwork?.id) {
+            if let id = selectedNetwork?.id { await bootstrap.refreshPendingEnrollmentRequests(for: id) }
         }
-        .focused($networkListIsFocused)
-        .listStyle(.sidebar)
-        .navigationTitle("Networks")
-        .navigationSplitViewColumnWidth(min: 210, ideal: 260, max: 380)
-        .overlay {
-            if bootstrap.networks.isEmpty {
-                ContentUnavailableView(
-                    "No Networks",
-                    systemImage: "network.slash",
-                    description: Text("Create or join a network to get started.")
-                )
-            }
+        .onChange(of: networkSettingsRequest) { _, _ in
+            guard embeddedNetworkID == nil else { return }
+            editorMode = .details
+            restoreSelection()
         }
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 10) {
-                Menu("Add Network", systemImage: "plus") {
-                    Button("Create Network") { editorMode = .create }
-                    Button("Join Network") { editorMode = .join }
-                }
-                .labelStyle(.iconOnly)
-
-                Button("Remove Network", systemImage: "minus", role: .destructive) {
-                    requestRemoval()
-                }
-                .labelStyle(.iconOnly)
-                .disabled(selectedNetwork == nil)
-                Spacer()
+        .onChange(of: persistedNetworkID) { _, _ in
+            guard embeddedNetworkID == nil else { return }
+            editorMode = .details
+            restoreSelection()
+        }
+        .onChange(of: selectedNetworkID) { _, selection in
+            persistedNetworkID = selection?.rawValue.uuidString ?? ""
+            if selection != nil || editorMode != .create {
+                editorMode = .details
             }
-            .padding(10)
-            .background(.bar)
+            editedName = selectedNetwork?.displayName ?? ""
+        }
+        .onChange(of: bootstrap.networks) { _, _ in
+            guard editorMode != .create else { return }
+            if editorMode != .details,
+               let activeNetwork = bootstrap.networks.first(where: \.isActive) {
+                selectedNetworkID = activeNetwork.id
+            } else if let selectedNetworkID,
+                      !bootstrap.networks.contains(where: { $0.id == selectedNetworkID }) {
+                self.selectedNetworkID = nil
+            }
         }
     }
 
@@ -1229,15 +2675,7 @@ struct NetworkManagerWindow: View {
     private var detailContent: some View {
         switch editorMode {
         case .details:
-            if let selectedNetwork {
-                networkDetails(selectedNetwork)
-            } else {
-                ContentUnavailableView(
-                    "Select a Network",
-                    systemImage: "network",
-                    description: Text("Choose a network in the sidebar or add a new one.")
-                )
-            }
+            networkInstances
         case .create:
             createNetworkView
         case .join:
@@ -1245,188 +2683,335 @@ struct NetworkManagerWindow: View {
         }
     }
 
-    private func networkDetails(_ network: NetworkSummary) -> some View {
+    private var networkInstances: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(network.displayName)
+            VStack(alignment: .leading, spacing: 20) {
+                HStack {
+                    Text(selectedNetwork?.displayName ?? "Networks")
                         .font(.title2.weight(.semibold))
                     Spacer()
-                    Menu {
-                        if network.isActive {
-                            Button("Active Network", systemImage: "checkmark") {}
-                                .disabled(true)
-                        } else {
-                            Button("Switch to This Network", systemImage: "arrow.triangle.swap") {
-                                Task { await bootstrap.switchNetwork(to: network.id) }
-                            }
-                            .disabled(bootstrap.state != .ready)
+                    if let network = selectedNetwork {
+                        if network.isActive { ActiveMessagingIndicator(health: network.messagingHealth, message: network.messagingHealthMessage) }
+                        if network.isHostingAuthority {
+                            AuthorityHostingIndicator(state: bootstrap.authorityHostingStates[network.id])
                         }
-                    } label: {
-                        Label(
-                            network.isActive ? "Active" : "Inactive",
-                            systemImage: network.isActive ? "checkmark.circle.fill" : "circle"
-                        )
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4)
-                        .background(
-                            network.isActive
-                                ? Color.green.opacity(0.18)
-                                : Color.secondary.opacity(0.14)
-                        )
-                        .clipShape(.capsule)
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help(
-                        network.isActive
-                            ? "This network is active"
-                            : "Choose an action for this network"
-                    )
-                }
 
-                Picker("Network Settings", selection: $selectedPane) {
-                    Text("Network Information").tag(NetworkSettingsPane.information.rawValue)
-                    Text("Invitations").tag(NetworkSettingsPane.invitations.rawValue)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-
-                if selectedPane == NetworkSettingsPane.invitations.rawValue {
-                    networkInvitationPane(network)
-                } else {
+                if let network = selectedNetwork {
                     networkInformationPane(network)
+                        .id(network.id)
+                } else if bootstrap.networks.isEmpty {
+                    ContentUnavailableView("No Networks", systemImage: "network.slash",
+                        description: Text("Create or join a network to get started."))
+                } else {
+                    ContentUnavailableView("Select a Network", systemImage: "network",
+                        description: Text("Select a network in the main window to view its settings."))
                 }
             }
-            .padding(28)
-            .frame(maxWidth: 720, alignment: .leading)
+            .padding(24)
+            .frame(maxWidth: 800, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .navigationTitle(network.displayName)
+        .id(selectedNetworkID)
     }
 
     private func networkInformationPane(_ network: NetworkSummary) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
-            GroupBox("Network") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Network Name")
-                        .font(.caption.weight(.semibold))
-                    if network.isHostingAuthority {
-                        HStack {
-                            TextField("Network Name", text: $editedName)
-                                .textFieldStyle(.roundedBorder)
-                                .onSubmit { rename(network) }
-                            Button("Save") { rename(network) }
-                                .disabled(
-                                    editedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                                    editedName.trimmingCharacters(in: .whitespacesAndNewlines) == network.displayName
+        let isStarting = network.isActive
+            && bootstrap.state.isPreparingNetwork(connectivity: bootstrap.activeNetworkConnectivity)
+
+        return VStack(alignment: .leading, spacing: 20) {
+            GroupBox {
+                VStack(alignment: .leading, spacing: 14) {
+                    LabeledContent("Name") {
+                        HStack(spacing: 6) {
+                            if network.isActive {
+                                MacNetworkStatusIcon(
+                                    connectivity: bootstrap.activeNetworkConnectivity,
+                                    systemImage: network.canManageNetwork
+                                        ? "network.badge.shield.half.filled"
+                                        : "network"
                                 )
+                                .accessibilityHidden(true)
+                            } else {
+                                Image(systemName: "network.slash")
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityHidden(true)
+                            }
+
+                            Text(network.displayName)
+                                .foregroundStyle(
+                                    network.isActive
+                                        ? bootstrap.activeNetworkConnectivity.networkForegroundStyle
+                                        : AnyShapeStyle(Color.secondary)
+                                )
+                            if network.isHostingAuthority {
+                                Button("Rename Network", systemImage: "pencil") {
+                                    editedName = network.displayName
+                                    isRenamingNetwork = true
+                                }
+                                .labelStyle(.iconOnly)
+                                .help("Rename Network")
+                            }
                         }
-                    } else {
-                        Text(network.displayName)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                     }
 
                     Divider()
-                    Text("Network ID")
-                        .font(.caption.weight(.semibold))
-                    Text(network.networkID.rawValue.uuidString)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
+
+                    NetworkInformationRow("Network ID") {
+                        Text(network.networkID.rawValue.uuidString)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .multilineTextAlignment(.trailing)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
 
                     Divider()
-                    Label(
-                        network.isHostingAuthority ? "Authority hosted on this Mac" : "Authority hosted elsewhere",
-                        systemImage: network.isHostingAuthority ? "desktopcomputer" : "network"
-                    )
-                    .font(.headline)
-                    Text(
-                        network.isHostingAuthority
-                            ? "This Mac currently hosts authority operations and can manage network trust."
-                            : network.canManageNetwork
-                                ? "This Mac can manage network trust, while authority hosting is provided elsewhere."
-                                : "This Mac participates as a member. Network trust is managed elsewhere."
-                    )
-                    .foregroundStyle(.secondary)
+                    NetworkCredentialDetailsView(bootstrap: bootstrap, network: network)
+
+                    if network.isHostingAuthority {
+                        Divider()
+                        AuthorityHostingControls(bootstrap: bootstrap, profileID: network.id)
+                        if network.isActive {
+                            Button("Reset Authority…", role: .destructive) {
+                                pendingAuthorityReset = network
+                            }
+                            .disabled(bootstrap.state == .securing)
+                            .accessibilityIdentifier("replaceNetworkAuthorityButton")
+                            Text("Resets this network’s authority credentials on this device. Every other device loses access and must join again using a new invitation. Existing invitations and pending join requests become invalid. You’ll be asked to confirm before proceeding.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    if bootstrap.networkSessions.first(where: { $0.id == network.id })?.lastError != nil {
+                        Divider()
+                        NetworkLastErrorDisclosure(
+                            message: bootstrap.networkSessions.first(where: { $0.id == network.id })?.lastError
+                        )
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
             }
 
-            HStack {
+            GroupBox("Devices in This Network") {
+                VStack(alignment: .leading, spacing: 16) {
+                    DisclosureGroup {
+                        NetworkAddressesContent(
+                            localName: bootstrap.deviceDisplayName,
+                            localID: bootstrap.localNodeID(for: network.id),
+                            isNetworkActive: network.isActive,
+                            localDeviceIsMember: !network.isActive || bootstrap.state == .ready,
+                            members: bootstrap.members(for: network),
+                            onlineMemberIDs: network.isActive ? bootstrap.onlineMemberIDs : [],
+                            isLocalDeviceOnline: network.isActive && bootstrap.state == .ready && bootstrap.activeNetworkConnectivity.isLocalDeviceOnline,
+                            authorityDeviceName: network.isActive ? bootstrap.activeAuthorityDeviceName : nil,
+                            isLocalDeviceAuthority: network.isHostingAuthority,
+                            localCanManageNetwork: network.canManageNetwork,
+                            membershipNotice: (bootstrap.savedMemberships[network.id] ?? .unavailable).notice,
+                            isStarting: isStarting
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("Devices")
+                            NetworkSectionInformationButton(
+                                information: .devices,
+                                show: { presentedSectionInformation = $0 }
+                            )
+                        }
+                    }
+
+                    if network.isHostingAuthority {
+                        DisclosureGroup("Device Registration") {
+                            VStack(alignment: .leading, spacing: 16) {
+                                networkInvitationPane(network)
+                            }
+                            .padding(.top, 12)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
                 if !network.isActive {
-                    Button("Make Active", systemImage: "checkmark.circle") {
+                    Button("Use for Messaging", systemImage: "bubble.left.fill") {
                         Task { await bootstrap.switchNetwork(to: network.id) }
                     }
+                    .disabled(bootstrap.state == .securing || bootstrap.state == .starting)
                 }
-                Spacer()
-                Button(network.isHostingAuthority ? "Delete Network" : "Forget Network…", role: .destructive) {
-                    requestRemoval()
-                }
-            }
 
-            GroupBox("Addressable Devices") {
-                NetworkAddressesContent(
-                    localName: bootstrap.deviceDisplayName,
-                    localID: bootstrap.nodeID,
-                    members: network.isActive ? bootstrap.networkMembers : [],
-                    onlineMemberIDs: network.isActive ? bootstrap.onlineMemberIDs : [],
-                    isLocalDeviceOnline: network.isActive
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
             }
         }
     }
 
     @ViewBuilder
     private func networkInvitationPane(_ network: NetworkSummary) -> some View {
-        if network.canManageNetwork {
-            GroupBox("Invitation to Join This Network") {
+        if network.isHostingAuthority {
+            DisclosureGroup("Invitation") {
                 VStack(alignment: .leading, spacing: 10) {
+                    Text("1. Generate an Invitation")
+                        .font(.headline)
+
                     Button(
                         displayedInvitationJSON.isEmpty ? "Generate Invitation" : "Generate New Invitation",
-                        systemImage: displayedInvitationJSON.isEmpty ? "qrcode" : "arrow.clockwise"
+                        systemImage: "plus.viewfinder"
                     ) {
-                        Task { await bootstrap.createInvitation() }
+                        Task { await bootstrap.createInvitation(for: network.id) }
                     }
-                    .disabled(!network.isActive || !bootstrap.canCreateInvitations)
+                    .disabled(bootstrap.authorityHostingStates[network.id] != .running || bootstrap.authorityHostingBusy)
 
-                    if !displayedInvitationJSON.isEmpty {
+                    if bootstrap.invitationIsConsumed(displayedInvitationJSON) {
+                        UsedInvitationNotice()
+                    } else if !displayedInvitationJSON.isEmpty {
                         InvitationQRCodeView(invitation: displayedInvitationJSON)
                             .frame(width: 320)
                             .frame(minHeight: 390)
                             .frame(maxWidth: .infinity, alignment: .center)
-                    }
 
-                    Text("Invitation JSON")
-                        .font(.caption.weight(.semibold))
-                    TextEditor(text: $displayedInvitationJSON)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(minHeight: 110, maxHeight: 160)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(.separator)
-                        }
-                        .accessibilityLabel("Invitation JSON")
-
-                    Text("Create a short-lived invitation that another Beakr device can scan, paste, or import.")
-                        .foregroundStyle(.secondary)
-
-                    HStack {
-                        InvitationCopyButton(
-                            invitation: displayedInvitationJSON,
-                            action: copyInvitation
-                        )
-                        Button("Paste", systemImage: "doc.on.clipboard") { pasteInvitation() }
-                        if !displayedInvitationJSON.isEmpty {
+                        Text("Scan the QR code, or copy or share the invitation with the joining device.")
+                            .foregroundStyle(.secondary)
+                        HStack {
+                            InvitationCopyButton(
+                                invitation: displayedInvitationJSON,
+                                action: copyInvitation
+                            )
                             InvitationShareLink(invitation: displayedInvitationJSON) {
                                 Label("Share", systemImage: "square.and.arrow.up")
                             }
                         }
+
+                        if let invitation = try? EnrollmentWireCodec.decode(
+                            EnrollmentInvitation.self,
+                            from: Data(displayedInvitationJSON.utf8)
+                        ) {
+                            MacInvitationTechnicalDetails(invitation: invitation)
+                        }
                     }
+
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 4)
+            }
+
+            DisclosureGroup("Join Request Approvals") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Button("Refresh Join Requests", systemImage: "arrow.clockwise") {
+                        Task { await bootstrap.refreshPendingEnrollmentRequests(for: network.id) }
+                    }
+                    .disabled(bootstrap.authorityHostingStates[network.id] != .running || bootstrap.authorityHostingBusy)
+
+                        if bootstrap.administration(for: network.id).requests.isEmpty {
+                            Text("No pending join requests.").foregroundStyle(.secondary)
+                        }
+                        ForEach(
+                            bootstrap.administration(for: network.id).requests.sorted {
+                                $0.invitation.issuedAtMilliseconds > $1.invitation.issuedAtMilliseconds
+                            },
+                            id: \.requestID
+                        ) { request in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(request.deviceDisplayName ?? "Device wants to join")
+                                        .font(.headline)
+                                    Text("Node ID: \(request.nodeID.rawValue.uuidString)")
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                    Text("Request: \(request.requestID.uuidString)")
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                    Text(
+                                        Date(
+                                            timeIntervalSince1970: Double(request.invitation.issuedAtMilliseconds) / 1_000
+                                        ),
+                                        format: .dateTime.hour().minute().second()
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("Allow", systemImage: "person.badge.plus") {
+                                    Task {
+                                        await bootstrap.approveEnrollmentRequest(request.requestID, for: network.id)
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(bootstrap.authorityHostingStates[network.id] != .running || bootstrap.authorityHostingBusy)
+                                Button("Don’t Allow", role: .destructive) {
+                                    Task {
+                                        await bootstrap.rejectEnrollmentRequest(request.requestID, for: network.id)
+                                    }
+                                }
+                                .disabled(bootstrap.authorityHostingStates[network.id] != .running || bootstrap.authorityHostingBusy)
+                            }
+                        }
+
+                        if let message = bootstrap.administration(for: network.id).message {
+                            Label(message, systemImage: "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(message.hasPrefix("Approved") ? .green : .secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+            }
+
+            if !bootstrap.administration(for: network.id).records.isEmpty {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(bootstrap.administration(for: network.id).records) { record in
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(registrationDeviceName(for: record))
+                                        .font(.body.weight(.medium))
+                                    Text("Node ID: \(abbreviatedDeviceID(record.request.nodeID))")
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                    Text(
+                                        Date(timeIntervalSince1970: Double(record.updatedAtMilliseconds) / 1_000),
+                                        format: .dateTime.year().month().day().hour().minute()
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    if let expiresAt = record.accessExpiresAtMilliseconds {
+                                        Text(
+                                            "Permission expires: \(Date(timeIntervalSince1970: Double(expiresAt) / 1_000).formatted(date: .abbreviated, time: .shortened))"
+                                        )
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                Text(registrationStatus(for: record.status))
+                                    .font(.caption.weight(.semibold))
+                            }
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+                } label: {
+                    HStack {
+                        Text("Device Registration History")
+                        Spacer()
+                        Button("Export…", systemImage: "square.and.arrow.up") {
+                            exportEnrollmentAudit()
+                        }
+                        Button("Verify…", systemImage: "checkmark.shield") {
+                            verifyEnrollmentAudit()
+                        }
+                    }
+                }
             }
         } else {
             ContentUnavailableView(
@@ -1441,6 +3026,53 @@ struct NetworkManagerWindow: View {
         }
     }
 
+    private func exportEnrollmentAudit() {
+        guard let id = selectedNetwork?.id else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "beakr-enrollment-audit.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+        Task { await bootstrap.exportEnrollmentAudit(to: fileURL, for: id) }
+    }
+
+    private func verifyEnrollmentAudit() {
+        guard let id = selectedNetwork?.id else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+        Task { await bootstrap.verifyEnrollmentAudit(at: fileURL, for: id) }
+    }
+
+    private func registrationDeviceName(for record: EnrollmentAuditRecord) -> String {
+        guard selectedNetwork?.isActive == true else { return record.request.deviceDisplayName ?? "Unknown Device" }
+        return bootstrap.networkMembers.first {
+            $0.id == record.request.nodeID.rawValue
+        }?.displayName ?? "Unknown Device"
+    }
+
+    private func abbreviatedDeviceID(_ nodeID: NodeID) -> String {
+        let identifier = nodeID.rawValue.uuidString
+        return "\(identifier.prefix(8))…\(identifier.suffix(5))"
+    }
+
+    private func registrationStatus(for status: EnrollmentAuditStatus) -> String {
+        switch status {
+        case .pending:
+            "Registration Requested"
+        case .approved:
+            "Approved — Waiting for Device"
+        case .confirmed:
+            "Registered"
+        case .rejected:
+            "Not Approved"
+        case .cancelled:
+            "Cancelled"
+        case .expired:
+            "Expired"
+        }
+    }
+
     private var createNetworkView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -1448,22 +3080,52 @@ struct NetworkManagerWindow: View {
                     Text("Create Network")
                         .font(.title2.weight(.semibold))
                     Spacer()
-                    Button("Cancel") { editorMode = .details }
+                    Button("Cancel") {
+                        creationAttempted = false
+                        if creatingNetwork == true {
+                            dismiss()
+                        } else {
+                            editorMode = .details
+                        }
+                    }
+                    .keyboardShortcut(.cancelAction)
                 }
                 GroupBox {
                     VStack(alignment: .leading, spacing: 14) {
-                        TextField("Network Name", text: $bootstrap.networkDisplayName)
-                        Text("This Mac will store the network management credentials and can create invitations.")
+                        MacInitialFocusTextField(
+                            text: $bootstrap.networkDisplayName,
+                            placeholder: "Network Name"
+                        )
+                        Text("This Mac will provide the new network’s Authority Service. Your current messaging network will remain selected.")
                             .foregroundStyle(.secondary)
                         Button("Create Network", systemImage: "network.badge.shield.half.filled") {
-                            Task { await bootstrap.createNetwork() }
+                            creationAttempted = true
+                            Task {
+                                await bootstrap.createNetwork()
+                                if let createdID = bootstrap.lastCreatedNetworkID {
+                                    creationAttempted = false
+                                    if let onNetworkCreated {
+                                        onNetworkCreated(createdID)
+                                    } else {
+                                        selectedNetworkID = createdID
+                                        editorMode = .details
+                                    }
+                                }
+                            }
                         }
+                        .keyboardShortcut(.defaultAction)
                         .disabled(
-                            bootstrap.state == .creatingNetwork ||
+                            bootstrap.isCreatingNetwork ||
                             bootstrap.networkDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         )
-                        if bootstrap.state == .creatingNetwork {
+                        if bootstrap.isCreatingNetwork {
                             ProgressView("Creating network")
+                        }
+                        if creationAttempted && !bootstrap.isCreatingNetwork {
+                            Label(bootstrap.statusMessage, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("createNetworkStatus")
                         }
                     }
                     .padding(8)
@@ -1490,7 +3152,7 @@ struct NetworkManagerWindow: View {
                             .lineLimit(5...12)
                         Text("Paste the single-use invitation supplied by a network manager.")
                             .foregroundStyle(.secondary)
-                        Button("Join Network", systemImage: "person.badge.key") {
+                        Button("Request Network Access", systemImage: "person.badge.key") {
                             Task { await bootstrap.joinNetwork() }
                         }
                         .disabled(
@@ -1499,6 +3161,15 @@ struct NetworkManagerWindow: View {
                         )
                         if bootstrap.state == .joiningNetwork {
                             ProgressView("Joining network")
+                        }
+                        if bootstrap.hasPendingJoiningRequest {
+                            Label(bootstrap.state == .failed ? "Join Needs Attention" : "Joining…", systemImage: "hourglass")
+                                .foregroundStyle(.orange)
+                            Text(bootstrap.statusMessage)
+                                .foregroundStyle(.secondary)
+                            Button("Cancel Pending Request", role: .destructive) {
+                                Task { await bootstrap.cancelPendingNetworkJoin() }
+                            }
                         }
                     }
                     .padding(8)
@@ -1509,7 +3180,7 @@ struct NetworkManagerWindow: View {
         }
         .navigationTitle("Join Network")
         .networkJoinAlert(
-            $bootstrap.networkJoinAlert,
+            $bootstrap.standaloneNetworkJoinAlert,
             confirmCollision: { Task { await bootstrap.confirmCollidingNetworkJoin() } },
             confirmReattachment: { Task { await bootstrap.confirmContextReattachment() } }
         )
@@ -1520,7 +3191,7 @@ struct NetworkManagerWindow: View {
            let selected = bootstrap.networks.first(where: { $0.id == selectedNetworkID }) {
             return selected
         }
-        return bootstrap.networks.first(where: \.isActive) ?? bootstrap.networks.first
+        return nil
     }
 
     private var selectedOwnedNetwork: OwnedNetworkSummary? {
@@ -1529,6 +3200,11 @@ struct NetworkManagerWindow: View {
     }
 
     private func restoreSelection() {
+        if let embeddedNetworkID {
+            selectedNetworkID = bootstrap.networks.contains(where: { $0.id == embeddedNetworkID }) ? embeddedNetworkID : nil
+            editedName = selectedNetwork?.displayName ?? ""
+            return
+        }
         if let persistedUUID = UUID(uuidString: persistedNetworkID) {
             let persistedID = NetworkProfileID(rawValue: persistedUUID)
             if bootstrap.networks.contains(where: { $0.id == persistedID }) {
@@ -1540,12 +3216,16 @@ struct NetworkManagerWindow: View {
         let initial = bootstrap.networks.first(where: \.isActive) ?? bootstrap.networks.first
         selectedNetworkID = initial?.id
         editedName = initial?.displayName ?? ""
-        displayedInvitationJSON = initial?.isActive == true ? bootstrap.invitationJSON : ""
     }
 
     private func rename(_ network: NetworkSummary) {
-        guard network.canManageNetwork else { return }
+        guard network.canManageNetwork, canRename(network) else { return }
         Task { await bootstrap.renameOwnedNetwork(network.id, to: editedName) }
+    }
+
+    private func canRename(_ network: NetworkSummary) -> Bool {
+        let normalizedName = editedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !normalizedName.isEmpty && normalizedName != network.displayName
     }
 
     private func requestRemoval() {
@@ -1563,9 +3243,103 @@ struct NetworkManagerWindow: View {
         pasteboard.setString(displayedInvitationJSON, forType: .string)
     }
 
-    private func pasteInvitation() {
-        guard let invitation = NSPasteboard.general.string(forType: .string) else { return }
-        displayedInvitationJSON = invitation.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private struct MacInitialFocusTextField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeNSView(context: Context) -> InitialFocusTextField {
+        let textField = InitialFocusTextField()
+        textField.stringValue = text
+        textField.placeholderString = placeholder
+        textField.bezelStyle = .roundedBezel
+        textField.isBezeled = true
+        textField.isEditable = true
+        textField.isSelectable = true
+        textField.delegate = context.coordinator
+        return textField
+    }
+
+    func updateNSView(_ textField: InitialFocusTextField, context: Context) {
+        context.coordinator.text = $text
+        if textField.currentEditor() == nil, textField.stringValue != text {
+            textField.stringValue = text
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var text: Binding<String>
+
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let textField = notification.object as? NSTextField else { return }
+            text.wrappedValue = textField.stringValue
+        }
+    }
+
+    final class InitialFocusTextField: NSTextField {
+        private var hasRequestedInitialFocus = false
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard !hasRequestedInitialFocus, let window else { return }
+            hasRequestedInitialFocus = true
+            Task { @MainActor [weak self, weak window] in
+                await Task.yield()
+                guard let self, let window else { return }
+                window.makeFirstResponder(self)
+                guard let editor = self.currentEditor() else { return }
+                editor.selectedRange = NSRange(
+                    location: (self.stringValue as NSString).length,
+                    length: 0
+                )
+            }
+        }
+    }
+}
+
+private struct MacInvitationTechnicalDetails: View {
+    let invitation: EnrollmentInvitation
+
+    var body: some View {
+        DisclosureGroup("Technical Details") {
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
+                detailRow("Network ID", value: invitation.networkID.rawValue.uuidString)
+                Divider()
+                    .gridCellUnsizedAxes(.horizontal)
+                detailRow("Authority ID", value: invitation.authorityID.rawValue.uuidString)
+                Divider()
+                    .gridCellUnsizedAxes(.horizontal)
+                detailRow("Authority Address", value: invitation.controlPlaneURL?.absoluteString ?? "Unavailable")
+                Divider()
+                    .gridCellUnsizedAxes(.horizontal)
+                detailRow("Environment", value: invitation.environment)
+                Divider()
+                    .gridCellUnsizedAxes(.horizontal)
+                detailRow("Services", value: invitation.serviceScopes.formatted())
+            }
+            .padding(.top, 8)
+            .font(.caption)
+            .textSelection(.enabled)
+        }
+    }
+
+    private func detailRow(_ title: LocalizedStringKey, value: String) -> some View {
+        GridRow(alignment: .firstTextBaseline) {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .multilineTextAlignment(.trailing)
+        }
     }
 }
 
@@ -1576,7 +3350,7 @@ private enum NetworkEditorMode {
 
     var title: LocalizedStringKey {
         switch self {
-        case .details: "Network Details"
+        case .details: "Network Parameters"
         case .create: "Create Network"
         case .join: "Join Network"
         }
@@ -1603,7 +3377,39 @@ private struct MailboxSelection: Hashable {
     }
 }
 
+private struct MacNetworksSectionHeader: View {
+    let showStatusInformation: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Text("Networks")
+                Button("About Network Status Colors", systemImage: "info.circle") {
+                    showStatusInformation()
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+            .padding(.bottom, 6)
+
+        }
+    }
+}
+
 #if os(macOS)
+private enum MacSidebarCategory {
+    case mailboxes
+    case members
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .mailboxes: "Mailboxes"
+        case .members: "Members"
+        }
+    }
+}
+
 private enum MacMemberAvailability: Hashable {
     case online
     case offline
@@ -1617,8 +3423,16 @@ private enum MacMemberAvailability: Hashable {
 }
 
 private enum MacSidebarRoute: Hashable {
+    case network(NetworkProfileID)
     case mailbox(MailboxSelection)
     case members(NetworkProfileID, MacMemberAvailability)
+
+    var networkID: NetworkProfileID? {
+        switch self {
+        case .network(let id), .members(let id, _): id
+        case .mailbox(let selection): selection.networkID
+        }
+    }
 
     var mailboxSelection: MailboxSelection? {
         guard case .mailbox(let selection) = self else { return nil }
@@ -1637,15 +3451,28 @@ private enum MacDetailRoute: Hashable {
 }
 #endif
 
+private struct RevokedContextExplanation: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Access Revoked", systemImage: "person.crop.circle.badge.xmark")
+                .foregroundStyle(.red)
+            Text("The network authority revoked this device’s access. Your message history is preserved and is read-only.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct ArchivedContextRow: View {
     let mailbox: Mailbox
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: mailbox == .inbox ? "tray" : "paperplane")
+            Image(systemName: mailbox.systemImage)
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text(mailbox == .inbox ? "Inbox" : "Outbox")
+                Text(mailbox.title)
                 Text("Preserved mailbox — read only")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1665,6 +3492,9 @@ private struct MacMemberDetail: Identifiable, Equatable {
     let isOnline: Bool
     let isActiveNetwork: Bool
     let lastSeen: Date?
+    var deviceIPAddress: String? = nil
+    var connectionIPAddress: String? = nil
+    var membershipNotice: LocalizedStringResource? = nil
 
     var id: UUID { deviceID }
 }
@@ -1673,6 +3503,9 @@ private struct MacMemberDirectorySnapshot {
     let networks: [NetworkSummary]
     let localDeviceName: String
     let localDeviceID: UUID?
+    let savedMemberships: [NetworkProfileID: SavedNetworkMembership]
+    let localNodeIDs: [NetworkProfileID: UUID]
+    let localDeviceOnline: Bool
     let activeNetworkMembers: [NetworkMemberSummary]
     let onlineMemberIDs: Set<UUID>
 
@@ -1682,7 +3515,10 @@ private struct MacMemberDirectorySnapshot {
     ) -> [MacMemberDetail] {
         allMembers(networkID: networkID)
             .filter { availability == .online ? $0.isOnline : !$0.isOnline }
-            .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+            .sorted {
+                if $0.isLocalDevice != $1.isLocalDevice { return $0.isLocalDevice }
+                return $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+            }
     }
 
     func member(networkID: NetworkProfileID, deviceID: UUID) -> MacMemberDetail? {
@@ -1692,29 +3528,33 @@ private struct MacMemberDirectorySnapshot {
     private func allMembers(networkID: NetworkProfileID) -> [MacMemberDetail] {
         guard let network = networks.first(where: { $0.id == networkID }) else { return [] }
         var result: [MacMemberDetail] = []
-        if let localDeviceID {
+        if let localDeviceID = localNodeIDs[networkID] {
             result.append(MacMemberDetail(
                 networkID: network.id,
                 networkName: network.displayName,
                 deviceID: localDeviceID,
                 displayName: localDeviceName,
                 isLocalDevice: true,
-                isOnline: network.isActive,
+                isOnline: network.isActive && localDeviceOnline,
                 isActiveNetwork: network.isActive,
-                lastSeen: nil
+                lastSeen: nil,
+                membershipNotice: network.isActive ? nil : (savedMemberships[networkID] ?? .unavailable).notice
             ))
         }
-        guard network.isActive else { return result }
-        result.append(contentsOf: activeNetworkMembers.map { member in
+        let members = network.isActive ? activeNetworkMembers : savedMemberships[networkID]?.members ?? []
+        result.append(contentsOf: members.map { member in
             MacMemberDetail(
                 networkID: network.id,
                 networkName: network.displayName,
                 deviceID: member.id,
                 displayName: member.displayName,
                 isLocalDevice: false,
-                isOnline: onlineMemberIDs.contains(member.id),
-                isActiveNetwork: true,
-                lastSeen: member.lastSeen
+                isOnline: network.isActive && onlineMemberIDs.contains(member.id),
+                isActiveNetwork: network.isActive,
+                lastSeen: member.lastSeen,
+                deviceIPAddress: network.isActive && onlineMemberIDs.contains(member.id) ? member.deviceIPAddress : nil,
+                connectionIPAddress: network.isActive && onlineMemberIDs.contains(member.id) ? member.connectionIPAddress : nil,
+                membershipNotice: network.isActive ? nil : (savedMemberships[networkID] ?? .unavailable).notice
             )
         })
         return result
@@ -1723,13 +3563,23 @@ private struct MacMemberDirectorySnapshot {
 
 private struct MacDeviceProperties: View {
     let member: MacMemberDetail
+    let directory: MacMemberDirectorySnapshot
+    let bootstrap: NodeBootstrapModel
 
     var body: some View {
         Form {
             Section("Device") {
                 LabeledContent("Name", value: member.displayName)
+                if !member.isLocalDevice {
+                    LabeledContent("Reported IPv4", value: member.isOnline ? (member.deviceIPAddress ?? "--") : "--")
+                    LabeledContent("Connection IP") {
+                        Text(member.isOnline ? (member.connectionIPAddress ?? "--") : "--")
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
 
-                LabeledContent("Device ID") {
+                LabeledContent("Node ID") {
                     Text(member.deviceID.uuidString)
                         .font(.caption.monospaced())
                         .textSelection(.enabled)
@@ -1743,11 +3593,14 @@ private struct MacDeviceProperties: View {
                             .fill(member.isOnline ? Color.green : Color.secondary)
                             .frame(width: 8, height: 8)
                             .accessibilityHidden(true)
-                        Text(member.isOnline ? "Online" : "Offline")
+                        Text(!member.isActiveNetwork ? "UnObserved" : (member.isOnline ? "Online" : "Offline"))
                             .foregroundStyle(member.isOnline ? Color.green : Color.secondary)
                     }
                 }
 
+                if let notice = member.membershipNotice {
+                    Text(notice).font(.caption).foregroundStyle(.secondary)
+                }
                 if !member.isOnline, let lastSeen = member.lastSeen {
                     LabeledContent("Last Seen") {
                         Text(lastSeen, format: .relative(presentation: .named))
@@ -1755,9 +3608,30 @@ private struct MacDeviceProperties: View {
                 }
             }
 
-            Section("Network Membership") {
-                LabeledContent("Beakr'Net", value: member.networkName)
-                    .foregroundStyle(member.isActiveNetwork ? Color.green : Color.secondary)
+            if member.isLocalDevice {
+                Section("Saved Network Memberships") {
+                    ForEach(directory.networks) { network in
+                        VStack(alignment: .leading, spacing: 4) {
+                            LabeledContent(network.displayName) {
+                                Text(network.isActive ? "Used for messaging" : "Not selected for messaging")
+                            }
+                            if let id = directory.localNodeIDs[network.id] {
+                                Text(id.uuidString).font(.caption.monospaced()).textSelection(.enabled)
+                            }
+                            if !network.isActive {
+                                Text((directory.savedMemberships[network.id] ?? .unavailable).notice)
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            } else {
+                SharedStatusSection(profileID: member.networkID, peerID: member.deviceID, peerName: member.displayName,
+                                    isOnline: member.isActiveNetwork && member.isOnline, bootstrap: bootstrap)
+                    .id("\(member.networkID.rawValue)-\(member.deviceID)")
+                Section("Known Network Membership") {
+                    LabeledContent("Beakr'Net", value: member.networkName)
+                }
             }
         }
         .formStyle(.grouped)
@@ -1765,75 +3639,260 @@ private struct MacDeviceProperties: View {
     }
 }
 
+private struct MessagingConnectivityDisclosure: View {
+    let isActive: Bool
+    let requiresAttention: Bool
+    let connectivity: ActiveNetworkConnectivity
+    let knownDeviceCount: Int
+    let onlineDeviceCount: Int
+    var isStarting = false
+    var credentialStatus: NetworkCredentialStatus? = nil
+    @State private var isExpanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            LabeledContent("This Device", value: isStarting ? "Connecting…" : connectivity.localDeviceStatus)
+            LabeledContent("Other Devices Online", value: onlineDeviceCount.formatted())
+            LabeledContent(
+                isActive ? "Known Devices Offline" : "UnObserved Members",
+                value: max(knownDeviceCount - onlineDeviceCount, 0).formatted()
+            )
+        } label: {
+            LabeledContent("Messaging Connectivity") {
+                if let credentialStatus {
+                    Text(credentialStatus.title)
+                        .foregroundStyle(credentialStatus == .preparing ? Color.secondary : Color.red)
+                } else if connectivity == .localNetworkDenied {
+                    Text("Local Network Permission Required")
+                        .foregroundStyle(.red)
+                } else if isStarting {
+                    Text("Connecting…")
+                        .foregroundStyle(.secondary)
+                } else if requiresAttention {
+                    Text("Setup Needs Attention")
+                        .foregroundStyle(.red)
+                } else if isActive {
+                    Text("Active")
+                        .foregroundStyle(.blue)
+                } else {
+                    Text("Not Active")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                isExpanded.toggle()
+            }
+        }
+    }
+}
+
+private struct NetworkAccessRow: View {
+    let canManageNetwork: Bool
+
+    var body: some View {
+        NetworkInformationRow("Role") {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(canManageNetwork ? "Manager" : "Member")
+                Text(canManageNetwork
+                     ? "Can manage membership and invitations"
+                     : "Can join this network")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct NetworkAuthorityRow: View {
+    let deviceName: String?
+    let endpoint: String?
+    let isHostedHere: Bool
+    let isActive: Bool
+
+    var body: some View {
+        NetworkInformationRow("Authority") {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(deviceName ?? "Remote Device")
+                    .foregroundStyle(isActive ? Color.primary : Color.secondary)
+                if isHostedHere {
+                    Text("This Device")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let endpoint {
+                    Text(endpoint)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+}
+
 private struct MacNetworkOverviewSection: View {
     let network: NetworkSummary
+    @Binding var selection: MacSidebarRoute?
+    @Binding var selectedCategory: MacSidebarCategory
     let incomingCount: Int
     let outgoingCount: Int
+    let sentCount: Int
+    let trashCount: Int
     let onlineMemberCount: Int
     let offlineMemberCount: Int
     let activeConnectivity: ActiveNetworkConnectivity
+    let authorityHostingState: AuthorityHostingState?
+    let authorityHostingEnabled: Bool
+    let authorityHostingBusy: Bool
+    let setAuthorityHosting: (Bool) -> Void
     let membersAreAvailable: Bool
+    let showDetails: () -> Void
+    let makeActive: () -> Void
+    let requestRemoval: () -> Void
 
     @State private var networkIsExpanded = false
     @State private var mailboxesAreExpanded = false
     @State private var membersAreExpanded = false
 
+    @ViewBuilder
     var body: some View {
-        DisclosureGroup(isExpanded: $networkIsExpanded) {
-                DisclosureGroup(isExpanded: $mailboxesAreExpanded) {
-                    Label("Inbox", systemImage: "tray")
-                        .badge(incomingCount)
-                        .tag(MacSidebarRoute.mailbox(
-                            MailboxSelection(networkID: network.id, mailbox: .inbox)
-                        ))
+        networkHeader
+            .tag(MacSidebarRoute.network(network.id))
+            .task(id: network.isActive) {
+                networkIsExpanded = network.isActive
+                mailboxesAreExpanded = false
+                membersAreExpanded = false
+            }
 
-                    Label("Outbox", systemImage: "paperplane")
-                        .badge(outgoingCount)
-                        .tag(MacSidebarRoute.mailbox(
-                            MailboxSelection(networkID: network.id, mailbox: .outbox)
-                        ))
-                } label: {
-                    Label("Mailboxes", systemImage: "tray.2")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            mailboxesAreExpanded.toggle()
-                        }
-                }
+        if networkIsExpanded {
+            networkChildren
+                .padding(.leading, 20)
+        }
+    }
 
-                DisclosureGroup(isExpanded: $membersAreExpanded) {
-                    MacSidebarStatusLabel("Online", systemImage: "circle.fill")
-                        .foregroundStyle(membersAreAvailable ? Color.primary : Color.secondary)
-                        .badge(onlineMemberCount)
-                        .tag(MacSidebarRoute.members(network.id, .online))
-
-                    MacSidebarStatusLabel("Offline", systemImage: "circle")
-                        .foregroundStyle(.secondary)
-                        .badge(offlineMemberCount)
-                        .tag(MacSidebarRoute.members(network.id, .offline))
-                } label: {
-                    Label("Members", systemImage: "shareplay")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            membersAreExpanded.toggle()
-                        }
-                }
+    private var networkHeader: some View {
+        HStack(alignment: .top, spacing: 4) {
+            Button {
+                networkIsExpanded.toggle()
             } label: {
-                MacNetworkHeaderLabel(
-                    network: network,
-                    activeConnectivity: activeConnectivity
+                Image(systemName: networkIsExpanded ? "chevron.down" : "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(networkIsExpanded ? "Collapse network" : "Expand network")
+            .accessibilityValue(network.displayName)
+            MacNetworkHeaderLabel(
+                network: network,
+                activeConnectivity: activeConnectivity,
+                authorityHostingState: authorityHostingState
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                selection = .network(network.id)
+            }
+            .contextMenu {
+                Button("View Parameters", systemImage: "info.circle") {
+                    selection = .network(network.id)
+                    showDetails()
+                }
+                Divider()
+                Button("Use for Messaging", systemImage: "bubble.left.fill", action: requestMakeActive)
+                    .disabled(network.isActive)
+                if network.isHostingAuthority {
+                    Divider()
+                    Button("Start Authority Hosting", systemImage: "person.2.badge.key.fill") {
+                        setAuthorityHosting(true)
+                    }
+                    .disabled(authorityHostingBusy || authorityHostingState == .running)
+                    Button("Stop Authority Hosting", systemImage: "stop.circle") {
+                        setAuthorityHosting(false)
+                    }
+                    .disabled(authorityHostingBusy || !authorityHostingEnabled)
+                }
+                Divider()
+                Button(
+                    network.isHostingAuthority ? "Delete Network…" : "Forget Network…",
+                    systemImage: network.isHostingAuthority
+                        ? "trash"
+                        : "rectangle.portrait.and.arrow.right",
+                    role: .destructive,
+                    action: requestRemoval
                 )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var networkChildren: some View {
+        DisclosureGroup(isExpanded: $membersAreExpanded) {
+            MacSidebarStatusLabel("Online", systemImage: "circle.fill")
+                .foregroundStyle(membersAreAvailable ? Color.primary : Color.secondary)
+                .badge(onlineMemberCount)
+                .tag(MacSidebarRoute.members(network.id, .online))
+
+            MacSidebarStatusLabel(network.isActive ? "Offline" : "UnObserved", systemImage: "circle")
+                .foregroundStyle(.secondary)
+                .badge(offlineMemberCount)
+                .tag(MacSidebarRoute.members(network.id, .offline))
+        } label: {
+            Label("Members", systemImage: "shareplay")
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    networkIsExpanded.toggle()
+                    selectedCategory = .members
+                    selection = nil
+                    membersAreExpanded.toggle()
                 }
-            }
-        .task(id: network.isActive) {
-            networkIsExpanded = network.isActive
-            mailboxesAreExpanded = false
-            membersAreExpanded = false
+        }
+
+        DisclosureGroup(isExpanded: $mailboxesAreExpanded) {
+            Label("Inbox", systemImage: "tray.and.arrow.down")
+                .badge(incomingCount)
+                .tag(MacSidebarRoute.mailbox(
+                    MailboxSelection(networkID: network.id, mailbox: .inbox)
+                ))
+
+            Label("Outbox", systemImage: "tray.and.arrow.up")
+                .badge(outgoingCount)
+                .tag(MacSidebarRoute.mailbox(
+                    MailboxSelection(networkID: network.id, mailbox: .outbox)
+                ))
+
+            Label("Sent Items", systemImage: "paperplane")
+                .badge(sentCount)
+                .tag(MacSidebarRoute.mailbox(
+                    MailboxSelection(networkID: network.id, mailbox: .sentItems)
+                ))
+
+            Label("Trash", systemImage: "trash")
+                .badge(trashCount)
+                .tag(MacSidebarRoute.mailbox(
+                    MailboxSelection(networkID: network.id, mailbox: .trash)
+                ))
+        } label: {
+            Label("Mailboxes", systemImage: "tray.2")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    selectedCategory = .mailboxes
+                    selection = nil
+                    mailboxesAreExpanded.toggle()
+                }
+        }
+
+    }
+
+
+    private func requestMakeActive() {
+        if network.isActive {
+            NSSound.beep()
+        } else {
+            makeActive()
         }
     }
 }
@@ -1857,25 +3916,122 @@ private struct MacSidebarStatusLabel: View {
     }
 }
 
+private struct AuthorityHostingIndicator: View {
+    let state: AuthorityHostingState?
+    var showsTitle = false
+
+    private var title: LocalizedStringResource {
+        switch state {
+        case .running: "Authority Host On — This Mac"
+        case .stopped: "Authority Host Off — This Mac"
+        case .starting: "Authority Host Starting — This Mac"
+        case .stopping: "Authority Host Stopping — This Mac"
+        case .failed: "Authority Host Failed — Open Networks → Network Authority"
+        case nil: "Authority Host Checking — This Mac"
+        }
+    }
+
+    private var color: Color {
+        switch state {
+        case .running: .green
+        case .stopped, nil: .secondary
+        case .starting, .stopping: .orange
+        case .failed: .red
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: state == .failed
+                ? "exclamationmark.triangle.fill"
+                : (state == .running ? "person.2.badge.key.fill" : "person.2.badge.key"))
+                .fixedSize()
+                .symbolEffect(.pulse, isActive: state == nil || state == .starting || state == .stopping)
+            if showsTitle {
+                Text(title)
+            }
+        }
+        .foregroundStyle(color)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(title))
+        .help(Text(title))
+    }
+}
+
 private struct MacNetworkHeaderLabel: View {
     let network: NetworkSummary
     let activeConnectivity: ActiveNetworkConnectivity
+    let authorityHostingState: AuthorityHostingState?
+    @State private var appleNetworkSnapshot = AppleNetworkSnapshot.unknown
 
     private var foregroundStyle: AnyShapeStyle {
         guard network.isActive else { return AnyShapeStyle(.secondary) }
         return activeConnectivity.networkForegroundStyle
     }
 
+    private var deviceAddress: LocalizedStringResource {
+        if let address = appleNetworkSnapshot.localIPv4Address {
+            return "This Device IP: \(address)"
+        }
+        return appleNetworkSnapshot.hasChecked ? "This Device IP: Unavailable" : "This Device IP: Checking…"
+    }
+
+    private var connectionProgress: LocalizedStringResource {
+        guard network.isActive else { return "Messaging inactive" }
+        if let status = network.credentialStatus { return status.title }
+        switch activeConnectivity {
+        case .connected(let peerCount): return "\(peerCount + 1) Devices Online"
+        case .readyNoPeers: return "1 Device Online"
+        case .discoveringPeers: return "Finding devices…"
+        case .reconnecting: return "Checking connection…"
+        case .inactive: return "No Beakr network detected"
+        case .localNetworkDenied: return "Local Network Permission Required"
+        case .failed: return "Connection failed"
+        }
+    }
+
     var body: some View {
-        Label {
-            Text(network.displayName)
-                .fontWeight(.semibold)
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: network.isActive
+                ? (network.canManageNetwork ? "network.badge.shield.half.filled" : "network")
+                : "network.slash")
+                .fixedSize()
                 .foregroundStyle(foregroundStyle)
-        } icon: {
-            Image(systemName: network.canManageNetwork
-                ? "network.badge.shield.half.filled"
-                : "network")
-                .foregroundStyle(foregroundStyle)
+                .accessibilityHidden(true)
+                .symbolEffect(
+                    .pulse,
+                    options: .repeating.speed(0.7),
+                    isActive: network.isActive && activeConnectivity.isTransitioning
+                )
+            VStack(alignment: .leading, spacing: 4) {
+                Text(network.displayName)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(foregroundStyle)
+                Text(deviceAddress)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(Text(deviceAddress))
+                Text(connectionProgress)
+                    .font(.subheadline)
+                    .foregroundStyle(activeConnectivity == .localNetworkDenied ? Color.red : Color.secondary)
+                    .lineLimit(activeConnectivity == .localNetworkDenied ? nil : 1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if network.isActive {
+                ActiveMessagingIndicator(health: network.messagingHealth, message: network.messagingHealthMessage)
+            }
+            if network.isHostingAuthority {
+                AuthorityHostingIndicator(state: authorityHostingState)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .task {
+            for await path in CurrentInternetRouteProbe.updates() {
+                let snapshot = await AppleNetworkSnapshot.capture(path: path)
+                guard !Task.isCancelled else { return }
+                appleNetworkSnapshot = snapshot
+            }
         }
     }
 }
@@ -1884,8 +4040,39 @@ private struct MacNetworkHeaderLabel: View {
 private enum Mailbox: Hashable {
     case inbox
     case outbox
+    case sentItems
+    case trash
 
-    var title: LocalizedStringKey { self == .inbox ? "Inbox" : "Outbox" }
+    var title: LocalizedStringKey {
+        switch self {
+        case .inbox: "Inbox"
+        case .outbox: "Outbox"
+        case .sentItems: "Sent Items"
+        case .trash: "Trash"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .inbox: "tray.and.arrow.down"
+        case .outbox: "tray.and.arrow.up"
+        case .sentItems: "paperplane"
+        case .trash: "trash"
+        }
+    }
+
+    func includes(_ message: OutgoingMessage) -> Bool {
+        switch self {
+        case .inbox:
+            false
+        case .outbox:
+            message.state == .queued || message.state == .sending || message.state == .failed
+        case .sentItems:
+            message.state == .sent || message.state == .delivered
+        case .trash:
+            false
+        }
+    }
 }
 
 private func forgetNetworkMessage(
@@ -1911,18 +4098,53 @@ private enum MailMessageSelection: Hashable {
     case outgoing(UUID)
 }
 
+// Logs UI decisions on appearance and input changes, never from body evaluation.
+// Values supplied here are operational state only; omit names and user content.
+private struct NetworkIndicatorTraceModifier: ViewModifier {
+    let source: String
+    let details: String
+    @State private var previousChange: ContinuousClock.Instant?
+
+    func body(content: Content) -> some View {
+        content.onChange(of: details, initial: true) { _, newValue in
+            let now = ContinuousClock.now
+            let interval = previousChange.map { String(describing: $0.duration(to: now)) } ?? "initial"
+            let uptime = String(format: "%.3f", ProcessInfo.processInfo.systemUptime)
+            BeakrDiagnosticLog.emit("indicator source=\(source) uptimeSeconds=\(uptime) sincePrevious=\(interval) \(newValue)", logger: BeakrDiagnosticLog.connectivity)
+            previousChange = now
+        }
+    }
+}
+
+private extension View {
+    func traceNetworkIndicator(_ source: String, details: String) -> some View {
+        modifier(NetworkIndicatorTraceModifier(source: source, details: details))
+    }
+}
+
+private extension NodeBootstrapState {
+    // A restored identity is an intermediate startup state, not a membership failure.
+    func isPreparingNetwork(connectivity: ActiveNetworkConnectivity) -> Bool {
+        guard connectivity != .failed && connectivity != .localNetworkDenied else { return false }
+        switch self {
+        case .starting, .creatingNetwork, .joiningNetwork, .identityReady, .securing:
+            return true
+        case .needsConfiguration, .ready, .failed:
+            return false
+        }
+    }
+}
+
 private extension ActiveNetworkConnectivity {
     var networkTintColor: Color {
         switch self {
+        case .reconnecting, .discoveringPeers:
+            return .blue
+        case .readyNoPeers, .connected:
+            return .green
         case .inactive:
             return .secondary
-        case .reconnecting:
-            return .orange
-        case .discoveringPeers, .readyNoPeers:
-            return .accentColor
-        case .connected:
-            return .green
-        case .failed:
+        case .failed, .localNetworkDenied:
             return .red
         }
     }
@@ -1936,20 +4158,7 @@ private extension ActiveNetworkConnectivity {
     }
 
     var statusColor: Color {
-        switch self {
-        case .inactive:
-            return .secondary
-        case .reconnecting:
-            return .orange
-        case .discoveringPeers:
-            return .blue
-        case .readyNoPeers:
-            return .blue
-        case .connected:
-            return .green
-        case .failed:
-            return .red
-        }
+        networkTintColor
     }
 
     var compactStatusTitle: String {
@@ -1961,9 +4170,11 @@ private extension ActiveNetworkConnectivity {
         case .discoveringPeers:
             return "Finding devices"
         case .readyNoPeers:
-            return "No other devices online"
+            return "1 Device Online"
         case .connected(let peerCount):
-            return peerCount == 1 ? "1 other device online" : "\(peerCount) other devices online"
+            return "\(peerCount + 1) Devices Online"
+        case .localNetworkDenied:
+            return "Local Network Permission Required"
         case .failed:
             return "Connection failed"
         }
@@ -1979,25 +4190,14 @@ private extension ActiveNetworkConnectivity {
             return "Authenticating"
         case .readyNoPeers, .connected:
             return "Online"
+        case .localNetworkDenied:
+            return "Local Network Permission Required"
         case .failed:
             return "Unavailable"
         }
     }
 
-    var connectionDescription: String {
-        switch self {
-        case .inactive:
-            return "Stopped"
-        case .reconnecting:
-            return "Starting"
-        case .discoveringPeers:
-            return "Discovering and authenticating"
-        case .readyNoPeers, .connected:
-            return "Authenticated"
-        case .failed:
-            return "Error"
-        }
-    }
+
 }
 
 private struct MacNetworkStatusIcon: View {
@@ -2007,6 +4207,10 @@ private struct MacNetworkStatusIcon: View {
     var body: some View {
         Image(systemName: systemImage)
             .foregroundStyle(connectivity.networkForegroundStyle)
+            .traceNetworkIndicator(
+                "mac-network-icon",
+                details: "color=\(connectivity.networkTintColor) connectivity=\(connectivity) symbol=\(systemImage)"
+            )
             .symbolEffect(
                 .pulse.wholeSymbol,
                 options: .repeating.speed(0.7),
@@ -2074,13 +4278,11 @@ private struct MailboxSummaryHeader: View {
         case .discoveringPeers:
             "Discovering nearby devices…"
         case .readyNoPeers:
-            "Ready — no other devices online."
+            "1 Device Online"
         case .connected(let peerCount):
-            if peerCount == 1 {
-                "Connected to 1 device."
-            } else {
-                "Connected to \(peerCount) devices."
-            }
+            "\(peerCount + 1) Devices Online"
+        case .localNetworkDenied:
+            "Enable Local Network permission for Beakr in Settings."
         case .failed:
             "Unable to connect. Pull down to retry."
         }
@@ -2094,6 +4296,25 @@ private struct IncomingMailRow: View {
     let receivedAt: Date
     let isRead: Bool
     let isFlagged: Bool
+    let flagColor: MessageFlagColor?
+
+    init(
+        sender: String,
+        subject: String,
+        preview: String,
+        receivedAt: Date,
+        isRead: Bool,
+        isFlagged: Bool,
+        flagColor: MessageFlagColor? = nil
+    ) {
+        self.sender = sender
+        self.subject = subject
+        self.preview = preview
+        self.receivedAt = receivedAt
+        self.isRead = isRead
+        self.isFlagged = isFlagged
+        self.flagColor = flagColor
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -2123,8 +4344,8 @@ private struct IncomingMailRow: View {
                     Spacer(minLength: 8)
                     if isFlagged {
                         Image(systemName: "flag.fill")
-                            .foregroundStyle(.primary)
-                            .accessibilityLabel("Flagged")
+                            .foregroundStyle((flagColor ?? .orange).swiftUIColor)
+                            .accessibilityLabel("\((flagColor ?? .orange).title) flag")
                     }
                 }
                 Text(preview)
@@ -2151,6 +4372,26 @@ private struct OutgoingMailRow: View {
     let state: MessageDeliveryState
     let deliveredAt: Date?
     let openedAt: Date?
+    let isFlagged: Bool
+    let flagColor: MessageFlagColor?
+
+    init(
+        recipient: String,
+        messageBody: String,
+        state: MessageDeliveryState,
+        deliveredAt: Date?,
+        openedAt: Date?,
+        isFlagged: Bool = false,
+        flagColor: MessageFlagColor? = nil
+    ) {
+        self.recipient = recipient
+        self.messageBody = messageBody
+        self.state = state
+        self.deliveredAt = deliveredAt
+        self.openedAt = openedAt
+        self.isFlagged = isFlagged
+        self.flagColor = flagColor
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -2164,6 +4405,11 @@ private struct OutgoingMailRow: View {
                         .foregroundStyle(.primary.opacity(0.85))
                         .lineLimit(1)
                     Spacer(minLength: 8)
+                    if isFlagged {
+                        Image(systemName: "flag.fill")
+                            .foregroundStyle((flagColor ?? .orange).swiftUIColor)
+                            .accessibilityLabel("\((flagColor ?? .orange).title) flag")
+                    }
                     if let openedAt {
                         Text("Opened \(openedAt, format: .dateTime.month(.abbreviated).day().hour().minute())")
                     } else if let deliveredAt {
@@ -2294,38 +4540,197 @@ private extension View {
     }
 }
 
+private struct ActiveMessagingIndicator: View {
+    let health: MessagingHealth
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "bubble.left.fill")
+            if health == .degraded || health == .blocked {
+                Image(systemName: "exclamationmark.triangle.fill").font(.caption2)
+            }
+        }
+        .foregroundStyle(health.color)
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(message)
+        .help(message)
+    }
+}
+
+private extension MessagingHealth {
+    var color: Color {
+        switch self {
+        case .off: .secondary
+        case .healthy: .green
+        case .waiting, .degraded: .orange
+        case .blocked: .red
+        }
+    }
+}
+
+private struct NetworkStatusInformationView: View {
+#if os(macOS)
+    @Environment(\.dismiss) private var dismiss
+#endif
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    Label("Active for Messaging", systemImage: "bubble.left.fill")
+                        .foregroundStyle(.blue)
+                    Text("This device uses one network at a time for messaging. Choose Use for Messaging to change it.")
+                        .foregroundStyle(.secondary)
+#if os(macOS)
+                    Text("Authority hosting is independent of messaging. This Mac can run authorities for several networks. The people-and-key icon beside a network name is blue when hosting is on, gray when off, orange while changing, and red if hosting failed. Use the network’s context menu to start or stop hosting.")
+                        .foregroundStyle(.secondary)
+#endif
+                    Text("The leading network icon shows messaging connectivity. A pulsing icon means that Beakr'Net is still working on the connection.")
+                        .foregroundStyle(.secondary)
+
+                    NetworkStatusInformationRow(
+                        color: .secondary,
+                        title: "Gray",
+                        description: "The network is not selected for messaging on this device."
+                    )
+                    NetworkStatusInformationRow(
+                        color: .blue,
+                        title: "Blue",
+                        description: "The network is starting, reconnecting, or looking for devices."
+                    )
+                    NetworkStatusInformationRow(
+                        color: .green,
+                        title: "Green",
+                        description: "The network is active and operational on this device, even when no other devices are online. Device counts show peer presence separately."
+                    )
+                    NetworkStatusInformationRow(
+                        color: .red,
+                        title: "Red",
+                        description: "The selected network is unavailable, failed to connect, or needs Local Network permission. Open Network Parameters for details or to refresh it."
+                    )
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+            }
+            .navigationTitle("Network Services and Status")
 #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+#endif
+#if os(macOS)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+#endif
+        }
+#if os(macOS)
+        .frame(width: 460, height: 390)
+#endif
+    }
+}
+
+private struct NetworkStatusInformationRow: View {
+    let color: Color
+    let title: LocalizedStringKey
+    let description: LocalizedStringKey
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "network.badge.shield.half.filled")
+                .font(.title2)
+                .foregroundStyle(color)
+                .frame(width: 28)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                Text(description)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+#if os(iOS)
+private struct IOSNetworkInstanceRoute: Identifiable {
+    let id: NetworkProfileID
+}
+
 private struct IOSMailRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     let model: MessageComposerModel
     let bootstrap: NodeBootstrapModel
 
-    @State private var showingComposer = false
+    @State private var sharedStatusMember: IOSMemberDetailRoute?
+    @State private var showingMessagingHealth = false
     @State private var showingManagement = false
+    @State private var scannerSettingsReturnRoute: InvitationScannerReturnRoute?
+    @State private var showingNetworkRemoval = false
+    @State private var networkInstanceRoute: IOSNetworkInstanceRoute?
     @State private var confirmingHistoryDeletion = false
     @State private var confirmingQueuedDeletion = false
     @State private var isCommunicationIndicatorActive = false
     @State private var appleNetworkSnapshot = AppleNetworkSnapshot.unknown
+    @State private var navigationPath = NavigationPath()
+
+    private var networkSessions: [NetworkSession] {
+        bootstrap.networkSessions.filter(\.isDisplayable)
+    }
+
+    private var networks: [NetworkSummary] {
+        bootstrap.networks.filter { summary in networkSessions.contains { $0.id == summary.id } }
+    }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             IOSMailboxListView(
-                networks: bootstrap.networks,
+                isNavigationRoot: navigationPath.isEmpty,
+                networks: networks,
+                networkSessions: networkSessions,
+                savedMemberships: bootstrap.savedMemberships,
                 archivedContexts: bootstrap.archivedContexts,
-                incomingCount: model.unreadIncomingCount,
-                outgoingCount: model.outgoingMessages.count,
+                incomingCount: model.incomingMessages.filter { !model.trashedMessageIDs.contains($0.id) }.count,
+                outgoingCount: model.outgoingMessages.filter {
+                    !model.trashedMessageIDs.contains($0.id) && Mailbox.outbox.includes($0)
+                }.count,
+                sentCount: model.outgoingMessages.filter {
+                    !model.trashedMessageIDs.contains($0.id) && Mailbox.sentItems.includes($0)
+                }.count,
+                trashCount: model.trashedMessageIDs.count,
                 localDeviceName: bootstrap.deviceDisplayName,
                 localDeviceID: bootstrap.nodeID,
                 networkMembers: bootstrap.networkMembers,
                 onlineMemberIDs: bootstrap.onlineMemberIDs,
-                networkConnectivity: bootstrap.activeNetworkConnectivity,
+                storedIncomingMessages: bootstrap.storedIncomingMessages,
+                storedMailboxMetadata: bootstrap.storedMailboxMetadata,
                 appleNetworkSnapshot: appleNetworkSnapshot,
                 bootstrapState: bootstrap.state,
                 refresh: refreshNetwork,
+                switchNetwork: switchNetwork,
+                showMessagingHealth: { showingMessagingHealth = true },
+                showNetworkDetails: showNetworkDetails,
+                showSharedStatus: { sharedStatusMember = $0 },
+                deleteNetwork: bootstrap.deleteOwnedNetwork,
+                forgetNetwork: { networkID, dataDisposition in
+                    await bootstrap.forgetJoinedNetwork(
+                        networkID,
+                        dataDisposition: dataDisposition
+                    )
+                },
                 deleteArchivedContext: bootstrap.deleteArchivedContext
             )
             .navigationDestination(for: IOSMemberDetailRoute.self) { member in
-                IOSMemberDetailView(member: member, bootstrap: bootstrap)
+                if member.isLocalDevice {
+                    IOSDeviceSettingsView(bootstrap: bootstrap, member: member)
+                } else {
+                    IOSMemberDetailView(member: member, bootstrap: bootstrap)
+                }
             }
             .navigationDestination(for: MailboxSelection.self) { selection in
                 if let contextID = selection.contextID,
@@ -2333,36 +4738,57 @@ private struct IOSMailRootView: View {
                     ArchivedContextMailboxView(
                         contextID: context.id,
                         contextName: context.displayName,
+                        archiveReason: context.archiveReason,
                         mailbox: selection.mailbox,
                         incomingMessages: bootstrap.archivedIncomingMessages[contextID] ?? [],
                         mailboxMetadata: bootstrap.archivedMailboxMetadata[contextID] ?? .empty,
                         deleteContext: bootstrap.deleteArchivedContext
                     )
                 } else if let networkID = selection.networkID {
+                    let isActiveNetwork = networks.contains {
+                        $0.id == networkID && $0.isActive
+                    }
                     IOSMailboxMessageListView(
                         selection: selection,
-                        networkName: bootstrap.networks.first(where: { $0.id == networkID })?.displayName ?? "Network",
-                        networkConnectivity: bootstrap.networks.contains(where: { $0.id == networkID && $0.isActive })
+                        networkName: networks.first(where: { $0.id == networkID })?.displayName ?? "Network",
+                        networkConnectivity: isActiveNetwork
                             ? bootstrap.activeNetworkConnectivity
                             : .inactive,
                         appleNetworkSnapshot: appleNetworkSnapshot,
                         model: model,
-                        switchNetwork: switchNetwork,
+                        isActiveNetwork: isActiveNetwork,
+                        storedIncomingMessages: bootstrap.storedIncomingMessages[networkID] ?? [],
+                        storedMailboxMetadata: bootstrap.storedMailboxMetadata[networkID] ?? .empty,
+                        makeActive: { switchNetwork(networkID) },
                         refresh: refreshNetwork
                     )
                 }
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Color(uiColor: .systemGroupedBackground), for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     HStack(spacing: 8) {
                         IOSNetworkSwitcherMenu(
-                            networks: bootstrap.networks,
+                            networks: networks,
                             connectivity: bootstrap.activeNetworkConnectivity,
                             statusTitle: bootstrap.activeNetworkStatusTitle,
+                            requiresAttention: networks.contains(where: \.isActive) && bootstrap.state != .ready
+                                && !bootstrap.state.isPreparingNetwork(connectivity: bootstrap.activeNetworkConnectivity),
+                            isStarting: bootstrap.state.isPreparingNetwork(connectivity: bootstrap.activeNetworkConnectivity),
                             switchNetwork: switchNetwork,
-                            manageNetworks: { showingManagement = true }
+                            manageNetworks: {
+                                showingManagement = true
+                            },
+                            removeNetworks: {
+                                showingNetworkRemoval = true
+                            }
+                        )
+                        .traceNetworkIndicator(
+                            "ios-toolbar-inputs",
+                            details: "bootstrap=\(bootstrap.state) connectivity=\(bootstrap.activeNetworkConnectivity) networkCount=\(networks.count) hasActiveNetwork=\(networks.contains(where: \.isActive)) starting=\(bootstrap.state.isPreparingNetwork(connectivity: bootstrap.activeNetworkConnectivity)) requiresAttention=\(networks.contains(where: \.isActive) && bootstrap.state != .ready && !bootstrap.state.isPreparingNetwork(connectivity: bootstrap.activeNetworkConnectivity)) rule=attention-excludes-startup"
                         )
 
                         Image(systemName: "waveform")
@@ -2377,23 +4803,75 @@ private struct IOSMailRootView: View {
                     }
                     .accessibilityElement(children: .contain)
                 }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Compose", systemImage: "square.and.pencil") {
-                        showingComposer = true
-                    }
-                }
             }
         }
-        .sheet(isPresented: $showingComposer) {
-            IOSMessageComposerView(model: model, dismiss: { showingComposer = false })
+        .sheet(item: $sharedStatusMember) { member in
+            IOSMemberSharedStatusSheet(member: member, bootstrap: bootstrap)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showingMessagingHealth) {
+            NavigationStack {
+                MessagingServicesView(bootstrap: bootstrap)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingMessagingHealth = false }
+                        }
+                    }
+            }
         }
         .sheet(isPresented: $showingManagement) {
             IOSBeakrManagementView(
                 model: model,
                 bootstrap: bootstrap,
+                initialNetworkID: nil,
+                joinCompleted: returnToRootAfterJoin,
                 dismiss: { showingManagement = false }
             )
+            .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showingNetworkRemoval) {
+            IOSRemoveNetworksView(
+                networks: networks.filter { !$0.isHostingAuthority },
+                connectivity: bootstrap.activeNetworkConnectivity,
+                removeAndKeepData: { networkID in
+                    await bootstrap.forgetJoinedNetwork(
+                        networkID,
+                        dataDisposition: .keepLocalData
+                    )
+                },
+                removeAndDeleteData: { networkID in
+                    await bootstrap.forgetJoinedNetwork(
+                        networkID,
+                        dataDisposition: .deleteLocalData
+                    )
+                }
+            )
+            .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $networkInstanceRoute) { route in
+            IOSBeakrManagementView(
+                model: model,
+                bootstrap: bootstrap,
+                initialNetworkID: route.id,
+                joinCompleted: returnToRootAfterJoin,
+                dismiss: { networkInstanceRoute = nil }
+            )
+            .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $scannerSettingsReturnRoute) { route in
+            IOSBeakrManagementView(
+                model: model,
+                bootstrap: bootstrap,
+                initialNetworkID: route.initialNetworkID.map { NetworkProfileID(rawValue: $0) },
+                joinCompleted: returnToRootAfterJoin,
+                dismiss: { scannerSettingsReturnRoute = nil },
+                scannerReturnRoute: route
+            )
+            .presentationDragIndicator(.visible)
+        }
+        .task {
+            scannerSettingsReturnRoute = InvitationScannerReturnRoute.take()
         }
         .task(id: model.communicationActivitySequence) {
             guard model.communicationActivitySequence > 0 else { return }
@@ -2405,12 +4883,14 @@ private struct IOSMailRootView: View {
             }
             isCommunicationIndicatorActive = false
         }
-        .task {
-            appleNetworkSnapshot = await AppleNetworkSnapshot.capture()
-        }
-        .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            Task { appleNetworkSnapshot = await AppleNetworkSnapshot.capture() }
+        .task(id: "\(scenePhase)-\(WiFiNameAccess.shared.revision)") {
+            guard scenePhase == .active else { return }
+            WiFiNameAccess.shared.refreshAuthorization()
+            for await path in CurrentInternetRouteProbe.updates() {
+                let snapshot = await AppleNetworkSnapshot.capture(path: path)
+                guard !Task.isCancelled else { return }
+                appleNetworkSnapshot = snapshot
+            }
         }
         .confirmationDialog("Delete Message History?", isPresented: $confirmingHistoryDeletion) {
             Button("Delete Message History", role: .destructive) {
@@ -2428,8 +4908,8 @@ private struct IOSMailRootView: View {
         }
         .networkJoinAlert(
             Binding(
-                get: { bootstrap.networkJoinAlert },
-                set: { bootstrap.networkJoinAlert = $0 }
+                get: { bootstrap.standaloneNetworkJoinAlert },
+                set: { bootstrap.standaloneNetworkJoinAlert = $0 }
             ),
             confirmCollision: { Task { await bootstrap.confirmCollidingNetworkJoin() } },
             confirmReattachment: { Task { await bootstrap.confirmContextReattachment() } }
@@ -2437,111 +4917,270 @@ private struct IOSMailRootView: View {
     }
 
     private func switchNetwork(_ networkID: NetworkProfileID) {
-        guard !bootstrap.networks.contains(where: { $0.id == networkID && $0.isActive }) else { return }
+        guard !networks.contains(where: { $0.id == networkID && $0.isActive }) else { return }
+        navigationPath = NavigationPath()
         Task { await bootstrap.switchNetwork(to: networkID) }
     }
 
+    private func returnToRootAfterJoin() {
+        navigationPath = NavigationPath()
+        showingManagement = false
+        networkInstanceRoute = nil
+        scannerSettingsReturnRoute = nil
+    }
+
+    private func showNetworkDetails(_ networkID: NetworkProfileID) {
+        networkInstanceRoute = IOSNetworkInstanceRoute(id: networkID)
+    }
+
     private func refreshNetwork() async {
-        await bootstrap.reconnectActiveNetwork()
+        await bootstrap.refreshNetworkCredentials()
         guard !Task.isCancelled else { return }
         appleNetworkSnapshot = await AppleNetworkSnapshot.capture()
     }
 }
 
 private struct IOSNetworkSwitcherMenu: View {
+    @State private var isPresented = false
+
     let networks: [NetworkSummary]
     let connectivity: ActiveNetworkConnectivity
     let statusTitle: String
+    let requiresAttention: Bool
+    let isStarting: Bool
     let switchNetwork: (NetworkProfileID) -> Void
     let manageNetworks: () -> Void
+    let removeNetworks: () -> Void
 
     var body: some View {
-        Menu {
-            ForEach(networks) { network in
-                Button {
-                    switchNetwork(network.id)
-                } label: {
-                    Label(
-                        network.displayName,
-                        systemImage: network.isActive ? "checkmark.circle.fill" : "circle"
-                    )
-                }
-                .disabled(network.isActive)
-            }
-
-            if !networks.isEmpty {
-                Divider()
-            }
-
-            Button("Manage Networks…", systemImage: "gearshape", action: manageNetworks)
+        Button {
+            isPresented.toggle()
         } label: {
-            NetworkStatusIcon(connectivity: connectivity)
+            NetworkStatusIcon(
+                connectivity: connectivity,
+                hasNetworks: !networks.isEmpty,
+                requiresAttention: requiresAttention,
+                isStarting: isStarting
+            )
         }
         .accessibilityLabel("Switch Network")
-        .accessibilityValue(statusTitle)
+        .accessibilityValue(isStarting ? "Connecting" : (requiresAttention ? "Network requires attention." : statusTitle))
+        .popover(isPresented: $isPresented) {
+            VStack(spacing: 0) {
+                ForEach(networks) { network in
+                    Button {
+                        isPresented = false
+                        guard !network.isActive else { return }
+                        switchNetwork(network.id)
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: network.isActive ? "checkmark.circle.fill" : "circle")
+                                .frame(width: 24)
+                            Text(network.displayName)
+                            Spacer(minLength: 20)
+                        }
+                        .font(.title3)
+                        .foregroundStyle(networkStyle(for: network))
+                        .contentShape(Rectangle())
+                        .padding(.horizontal, 20)
+                        .frame(minHeight: 52)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if !networks.isEmpty {
+                    Divider()
+                        .padding(.horizontal, 16)
+                }
+
+                Button {
+                    isPresented = false
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(250))
+                        guard !Task.isCancelled else { return }
+                        manageNetworks()
+                    }
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: "gearshape.fill")
+                            .foregroundStyle(connectivity == .localNetworkDenied ? Color.red : Color.primary)
+                            .frame(width: 24)
+                        Text("Settings…")
+                        Spacer(minLength: 20)
+                    }
+                    .font(.title3)
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 20)
+                    .frame(minHeight: 52)
+                }
+                .buttonStyle(.plain)
+
+                if networks.contains(where: { !$0.isHostingAuthority }) {
+                    Button(role: .destructive) {
+                        isPresented = false
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(250))
+                            guard !Task.isCancelled else { return }
+                            removeNetworks()
+                        }
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: "minus.circle.fill")
+                                .frame(width: 24)
+                            Text("Remove Networks…")
+                            Spacer(minLength: 20)
+                        }
+                        .font(.title3)
+                        .foregroundStyle(.red)
+                        .contentShape(Rectangle())
+                        .padding(.horizontal, 20)
+                        .frame(minHeight: 52)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .frame(minWidth: 280)
+            .padding(.vertical, 8)
+            .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private func networkStyle(for network: NetworkSummary) -> AnyShapeStyle {
+        network.isActive
+            ? connectivity.networkForegroundStyle
+            : AnyShapeStyle(Color.secondary)
     }
 }
 
 private struct NetworkStatusIcon: View {
     let connectivity: ActiveNetworkConnectivity
+    let hasNetworks: Bool
+    let requiresAttention: Bool
+    let isStarting: Bool
 
     @ViewBuilder
     var body: some View {
-        if connectivity.isTransitioning {
-            Image(systemName: "network")
+        if isStarting {
+            Image(systemName: "gearshape.fill")
+                .foregroundStyle(.secondary)
+                .symbolEffect(.pulse, options: .repeating.speed(0.7), isActive: true)
+                .traceNetworkIndicator(
+                    "ios-network-gear",
+                    details: "color=secondary reason=startup pulsing=true hasNetworks=\(hasNetworks) requiresAttention=\(requiresAttention) connectivity=\(connectivity)"
+                )
+        } else if !hasNetworks || requiresAttention {
+            Image(systemName: "gearshape.fill")
+                .foregroundStyle(.red)
+                .traceNetworkIndicator(
+                    "ios-network-gear",
+                    details: "color=red reason=\(!hasNetworks ? "noNetworks" : "requiresAttention") hasNetworks=\(hasNetworks) requiresAttention=\(requiresAttention) connectivity=\(connectivity)"
+                )
+        } else if connectivity.isTransitioning {
+            Image(systemName: "gearshape.fill")
                 .foregroundStyle(connectivity == .reconnecting ? Color.secondary : connectivity.statusColor)
                 .symbolEffect(.pulse, options: .repeating.speed(0.7), isActive: true)
+                .traceNetworkIndicator(
+                    "ios-network-gear",
+                    details: "color=\(connectivity == .reconnecting ? Color.secondary : connectivity.statusColor) reason=connectivity pulsing=true hasNetworks=\(hasNetworks) requiresAttention=\(requiresAttention) connectivity=\(connectivity)"
+                )
         } else {
-            Image(systemName: "network")
+            Image(systemName: "gearshape.fill")
                 .foregroundStyle(connectivity.statusColor)
+                .traceNetworkIndicator(
+                    "ios-network-gear",
+                    details: "color=\(connectivity.statusColor) reason=connectivity pulsing=false hasNetworks=\(hasNetworks) requiresAttention=\(requiresAttention) connectivity=\(connectivity)"
+                )
         }
     }
 }
 
 private struct IOSMailboxListView: View {
     @Environment(\.scenePhase) private var scenePhase
+    let isNavigationRoot: Bool
     let networks: [NetworkSummary]
+    let networkSessions: [NetworkSession]
+    let savedMemberships: [NetworkProfileID: SavedNetworkMembership]
     let archivedContexts: [ContextSummary]
     let incomingCount: Int
     let outgoingCount: Int
+    let sentCount: Int
+    let trashCount: Int
     let localDeviceName: String
     let localDeviceID: UUID?
     let networkMembers: [NetworkMemberSummary]
     let onlineMemberIDs: Set<UUID>
-    let networkConnectivity: ActiveNetworkConnectivity
+    let storedIncomingMessages: [NetworkProfileID: [IncomingMessage]]
+    let storedMailboxMetadata: [NetworkProfileID: ContextMailboxMetadata]
     let appleNetworkSnapshot: AppleNetworkSnapshot
     let bootstrapState: NodeBootstrapState
     let refresh: () async -> Void
+    let switchNetwork: (NetworkProfileID) -> Void
+    let showMessagingHealth: () -> Void
+    let showNetworkDetails: (NetworkProfileID) -> Void
+    let showSharedStatus: (IOSMemberDetailRoute) -> Void
+    let deleteNetwork: (NetworkProfileID) async -> Void
+    let forgetNetwork: (NetworkProfileID, ForgottenNetworkDataDisposition) async -> Void
     let deleteArchivedContext: (ContextID) async -> Void
     @State private var refreshPhase = NetworkRefreshPhase.idle
     @State private var hasCompletedManualRefresh = false
     @State private var refreshResultDismissTask: Task<Void, Never>?
     @State private var pullStage = NetworkPullStage.hidden
-    @State private var armedHapticSequence = 0
-    @State private var prioritizedNetworkID: NetworkProfileID?
     @State private var expandedNetworkIDs: Set<NetworkProfileID> = []
     @State private var expandedMailboxIDs: Set<NetworkProfileID> = []
     @State private var expandedMemberIDs: Set<NetworkProfileID> = []
     @State private var previousActiveNetworkID: NetworkProfileID?
     @State private var hasInitializedExpansion = false
     @State private var contextPendingDeletion: ContextSummary?
+    @State private var networkPendingRemoval: NetworkSummary?
+    @State private var networkPendingForget: NetworkSummary?
+    @State private var isShowingNetworkStatusInformation = false
+    @State private var startupLoadingTimedOut = false
+
+    private var activeNetworkConnectivity: ActiveNetworkConnectivity {
+        networkSessions.first(where: \.isSelected)?.connectivity ?? .inactive
+    }
 
     private var orderedNetworks: [NetworkSummary] {
-        guard let prioritizedNetworkID = prioritizedNetworkID
-            ?? networks.first(where: \.isActive)?.id,
-              let prioritizedIndex = networks.firstIndex(where: { $0.id == prioritizedNetworkID }) else {
+        guard let activeIndex = networks.firstIndex(where: \.isActive) else {
             return networks
         }
 
         var orderedNetworks = networks
-        let prioritizedNetwork = orderedNetworks.remove(at: prioritizedIndex)
-        orderedNetworks.insert(prioritizedNetwork, at: 0)
+        let activeNetwork = orderedNetworks.remove(at: activeIndex)
+        orderedNetworks.insert(activeNetwork, at: 0)
         return orderedNetworks
     }
 
+    private var productName: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? "Beakr"
+    }
+
+    private var emptyNetworkStatus: LocalizedStringResource {
+        if pullStage != .hidden {
+            return "Pull to Refresh"
+        }
+        if bootstrapState == .starting && !startupLoadingTimedOut {
+            return "Checking Networks…"
+        }
+        return "No Networks"
+    }
+
+    private var emptyNetworkDescription: LocalizedStringResource {
+        if pullStage != .hidden {
+            return "Keep pulling until the refresh indicator appears."
+        }
+        return "Use the red Settings icon to create or join a network, or pull to refresh."
+    }
+
     private var refreshStatus: LocalizedStringResource? {
-        if refreshPhase == .refreshing {
+        if refreshPhase == .refreshing || refreshPhase == .settling {
             return "Refreshing Networks…"
+        }
+
+        if networks.isEmpty && archivedContexts.isEmpty {
+            return emptyNetworkStatus
         }
 
         if refreshPhase == .finished {
@@ -2558,64 +5197,130 @@ private struct IOSMailboxListView: View {
         }
     }
 
+    private func displayedIncomingCount(for network: NetworkSummary) -> Int {
+        guard !network.isActive else { return incomingCount }
+        let trashedIDs = storedMailboxMetadata[network.id]?.trashedMessageIDs ?? []
+        return (storedIncomingMessages[network.id] ?? []).count { !trashedIDs.contains($0.id) }
+    }
+
+    private func displayedOutgoingCount(for network: NetworkSummary) -> Int {
+        guard !network.isActive else { return outgoingCount }
+        let metadata = storedMailboxMetadata[network.id]
+        return (metadata?.outgoingMessages ?? []).count {
+            !(metadata?.trashedMessageIDs.contains($0.id) ?? false) && Mailbox.outbox.includes($0)
+        }
+    }
+
+    private func displayedSentCount(for network: NetworkSummary) -> Int {
+        guard !network.isActive else { return sentCount }
+        let metadata = storedMailboxMetadata[network.id]
+        return (metadata?.outgoingMessages ?? []).count {
+            !(metadata?.trashedMessageIDs.contains($0.id) ?? false) && Mailbox.sentItems.includes($0)
+        }
+    }
+
+    private func displayedTrashCount(for network: NetworkSummary) -> Int {
+        network.isActive ? trashCount : storedMailboxMetadata[network.id]?.trashedMessageIDs.count ?? 0
+    }
+
+    private func networkOverviewSection(_ network: NetworkSummary) -> some View {
+        IOSNetworkOverviewSection(
+            network: network,
+            incomingCount: displayedIncomingCount(for: network),
+            outgoingCount: displayedOutgoingCount(for: network),
+            sentCount: displayedSentCount(for: network),
+            trashCount: displayedTrashCount(for: network),
+            localDeviceName: localDeviceName,
+            localDeviceID: networkSessions.first { $0.id == network.id }?.profile.localNodeID.rawValue,
+            localDeviceIsMember: !network.isActive || bootstrapState == .ready,
+            isStarting: network.isActive && bootstrapState.isPreparingNetwork(connectivity: activeNetworkConnectivity),
+            members: network.isActive ? networkMembers : savedMemberships[network.id]?.members ?? [],
+            membershipIssue: savedMemberships[network.id]?.state == .saved
+                ? nil : (savedMemberships[network.id] ?? .unavailable).notice,
+            onlineMemberIDs: network.isActive ? onlineMemberIDs : [],
+            connectivity: activeNetworkConnectivity,
+            appleNetworkSnapshot: appleNetworkSnapshot,
+            showDetails: { showNetworkDetails(network.id) },
+            showMessagingHealth: showMessagingHealth,
+            showSharedStatus: showSharedStatus,
+            makeActive: { switchNetwork(network.id) },
+            requestRemoval: {
+                if network.isHostingAuthority {
+                    networkPendingRemoval = network
+                } else {
+                    networkPendingForget = network
+                }
+            },
+            networkIsExpanded: Binding(
+                get: { expandedNetworkIDs.contains(network.id) },
+                set: { isExpanded in
+                    if isExpanded {
+                        expandedNetworkIDs.insert(network.id)
+                    } else {
+                        expandedNetworkIDs.remove(network.id)
+                    }
+                }
+            ),
+            mailboxesAreExpanded: Binding(
+                get: { expandedMailboxIDs.contains(network.id) },
+                set: { isExpanded in
+                    if isExpanded {
+                        expandedMailboxIDs.insert(network.id)
+                    } else {
+                        expandedMailboxIDs.remove(network.id)
+                    }
+                }
+            ),
+            membersAreExpanded: Binding(
+                get: { expandedMemberIDs.contains(network.id) },
+                set: { isExpanded in
+                    if isExpanded {
+                        expandedMemberIDs.insert(network.id)
+                    } else {
+                        expandedMemberIDs.remove(network.id)
+                    }
+                }
+            )
+        )
+    }
+
+    @State private var listPresentationID = UUID()
+
     var body: some View {
+        mailboxList
+            .onChange(of: isNavigationRoot) { wasRoot, isRoot in
+                // Recreate only the List's presentation to restore its native top
+                // inset. Expansion and refresh state live in this parent view.
+                // Peer updates never reset the presentation or scroll position.
+                if !wasRoot && isRoot {
+                    listPresentationID = UUID()
+                }
+            }
+    }
+
+    private var mailboxList: some View {
         List {
             MailboxPageTitleRow(
-                title: "Beakr'Net",
+                title: LocalizedStringKey(productName),
                 subtitle: "Networks",
                 status: refreshStatus,
-                statusDate: hasCompletedManualRefresh ? appleNetworkSnapshot.checkedAt : nil
+                statusDate: hasCompletedManualRefresh ? appleNetworkSnapshot.checkedAt : nil,
+                showSubtitleInformation: { isShowingNetworkStatusInformation = true }
             )
-            .padding(.top, -10)
+            .padding(.bottom, (refreshStatus != nil || hasCompletedManualRefresh) ? 4 : -4)
             .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
 
             ForEach(orderedNetworks) { network in
-                IOSNetworkOverviewSection(
-                    network: network,
-                    incomingCount: network.isActive ? incomingCount : 0,
-                    outgoingCount: network.isActive ? outgoingCount : 0,
-                    localDeviceName: localDeviceName,
-                    localDeviceID: localDeviceID,
-                    members: network.isActive ? networkMembers : [],
-                    onlineMemberIDs: network.isActive ? onlineMemberIDs : [],
-                    connectivity: networkConnectivity,
-                    networkIsExpanded: Binding(
-                        get: { expandedNetworkIDs.contains(network.id) },
-                        set: { isExpanded in
-                            if isExpanded {
-                                expandedNetworkIDs.insert(network.id)
-                            } else {
-                                expandedNetworkIDs.remove(network.id)
-                            }
-                        }
-                    ),
-                    mailboxesAreExpanded: Binding(
-                        get: { expandedMailboxIDs.contains(network.id) },
-                        set: { isExpanded in
-                            if isExpanded {
-                                expandedMailboxIDs.insert(network.id)
-                            } else {
-                                expandedMailboxIDs.remove(network.id)
-                            }
-                        }
-                    ),
-                    membersAreExpanded: Binding(
-                        get: { expandedMemberIDs.contains(network.id) },
-                        set: { isExpanded in
-                            if isExpanded {
-                                expandedMemberIDs.insert(network.id)
-                            } else {
-                                expandedMemberIDs.remove(network.id)
-                            }
-                        }
-                    )
-                )
+                networkOverviewSection(network)
             }
 
             if !archivedContexts.isEmpty {
                 Section("Preserved Contexts") {
                     ForEach(archivedContexts) { context in
                         DisclosureGroup {
+                            if context.archiveReason == .membershipRevoked {
+                                RevokedContextExplanation()
+                            }
                             NavigationLink(value: MailboxSelection(contextID: context.id, mailbox: .inbox)) {
                                 ArchivedContextRow(mailbox: .inbox)
                             }
@@ -2623,8 +5328,23 @@ private struct IOSMailboxListView: View {
                             NavigationLink(value: MailboxSelection(contextID: context.id, mailbox: .outbox)) {
                                 ArchivedContextRow(mailbox: .outbox)
                             }
+
+                            NavigationLink(value: MailboxSelection(contextID: context.id, mailbox: .sentItems)) {
+                                ArchivedContextRow(mailbox: .sentItems)
+                            }
+
+                            NavigationLink(value: MailboxSelection(contextID: context.id, mailbox: .trash)) {
+                                ArchivedContextRow(mailbox: .trash)
+                            }
                         } label: {
-                            Label(context.displayName, systemImage: "archivebox")
+                            VStack(alignment: .leading, spacing: 4) {
+                                Label(context.displayName, systemImage: "archivebox")
+                                if context.archiveReason == .membershipRevoked {
+                                    Text("Access Revoked")
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                }
+                            }
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button("Delete", systemImage: "trash", role: .destructive) {
@@ -2635,7 +5355,45 @@ private struct IOSMailboxListView: View {
                 }
             }
         }
+        .id(listPresentationID)
         .refreshable { await performNetworkRefresh() }
+        .sheet(isPresented: $isShowingNetworkStatusInformation) {
+            NetworkStatusInformationView()
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $networkPendingForget) { network in
+            IOSForgetNetworkSheet(
+                network: network,
+                connectivity: activeNetworkConnectivity,
+                forgetAndKeepData: {
+                    networkPendingForget = nil
+                    Task { await forgetNetwork(network.id, .keepLocalData) }
+                },
+                forgetAndDeleteData: {
+                    networkPendingForget = nil
+                    Task { await forgetNetwork(network.id, .deleteLocalData) }
+                }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+        .confirmationDialog(
+            "Delete Network?",
+            isPresented: Binding(
+                get: { networkPendingRemoval != nil },
+                set: { if !$0 { networkPendingRemoval = nil } }
+            ),
+            presenting: networkPendingRemoval
+        ) { network in
+            Button("Delete \(network.displayName)", role: .destructive) {
+                networkPendingRemoval = nil
+                Task { await deleteNetwork(network.id) }
+            }
+            Button("Keep Network", role: .cancel) {}
+        } message: { network in
+            Text("This permanently removes \(network.displayName), its management credentials, and its local data.")
+        }
         .alert(
             "Delete Preserved Context?",
             isPresented: Binding(
@@ -2661,13 +5419,6 @@ private struct IOSMailboxListView: View {
             Text("Delete “\(context.displayName)” and its preserved Inbox, Outbox, and all local data? This cannot be undone.")
         }
         .onChange(of: networks, initial: true) { _, networks in
-            guard prioritizedNetworkID == nil
-                    || !networks.contains(where: { $0.id == prioritizedNetworkID }) else {
-                return
-            }
-            prioritizedNetworkID = networks.first(where: \.isActive)?.id
-        }
-        .onChange(of: networks, initial: true) { _, networks in
             let activeNetworkID = networks.first(where: \.isActive)?.id
             let availableNetworkIDs = Set(networks.map(\.id))
 
@@ -2685,26 +5436,35 @@ private struct IOSMailboxListView: View {
             previousActiveNetworkID = activeNetworkID
             hasInitializedExpansion = true
         }
-        .networkPullTracking(
-            isRefreshing: refreshPhase == .refreshing,
-            pullStage: $pullStage,
-            armedHapticSequence: $armedHapticSequence
-        )
-        .sensoryFeedback(.impact(weight: .light), trigger: armedHapticSequence)
         .onChange(of: scenePhase) { _, phase in
             guard phase != .active else { return }
             cancelNetworkRefreshPresentation()
         }
+        .task(id: bootstrapState) {
+            startupLoadingTimedOut = false
+            guard bootstrapState == .starting else { return }
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled, bootstrapState == .starting else { return }
+            startupLoadingTimedOut = true
+        }
         .overlay {
             if networks.isEmpty && archivedContexts.isEmpty {
-                if bootstrapState == .starting {
-                    ProgressView("Loading Networks…")
+                if refreshPhase == .refreshing || refreshPhase == .settling {
+                    EmptyView()
+                } else if bootstrapState == .starting && !startupLoadingTimedOut && pullStage == .hidden {
+                    ProgressView("Checking Networks…")
+                        .allowsHitTesting(false)
                 } else {
-                    ContentUnavailableView(
-                        "No Network",
-                        systemImage: "network.slash",
-                        description: Text("Use the Network button to join a Beakr network.")
-                    )
+                    ContentUnavailableView {
+                        Label {
+                            Text(emptyNetworkStatus)
+                        } icon: {
+                            Image(systemName: "network.slash")
+                        }
+                    } description: {
+                        Text(emptyNetworkDescription)
+                    }
+                    .allowsHitTesting(false)
                 }
             }
         }
@@ -2715,14 +5475,20 @@ private struct IOSMailboxListView: View {
         refreshResultDismissTask?.cancel()
         pullStage = .hidden
         refreshPhase = .refreshing
+        let refreshStartedAt = ContinuousClock.now
         await refresh()
-        guard !Task.isCancelled else { return }
-        hasCompletedManualRefresh = true
-        withAnimation {
-            prioritizedNetworkID = networks.first(where: \.isActive)?.id
+        let minimumRefreshDuration = Duration.seconds(1)
+        let elapsedRefreshDuration = ContinuousClock.now - refreshStartedAt
+        if elapsedRefreshDuration < minimumRefreshDuration {
+            try? await Task.sleep(for: minimumRefreshDuration - elapsedRefreshDuration)
         }
-        refreshPhase = .finished
+        guard !Task.isCancelled else { return }
+        refreshPhase = .settling
         refreshResultDismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            hasCompletedManualRefresh = true
+            refreshPhase = .finished
             try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled else { return }
             refreshPhase = .idle
@@ -2736,7 +5502,10 @@ private struct IOSMailboxListView: View {
     }
 }
 
-private struct IOSMemberDetailRoute: Hashable {
+private struct IOSMemberDetailRoute: Hashable, Identifiable {
+    var id: String { "\(profileID.rawValue)-\(deviceID?.uuidString ?? credentialID?.uuidString ?? "local")" }
+    let profileID: NetworkProfileID
+    let credentialID: UUID?
     let networkName: String
     let deviceID: UUID?
     let displayName: String
@@ -2745,33 +5514,79 @@ private struct IOSMemberDetailRoute: Hashable {
     let isActiveNetwork: Bool
 }
 
+private struct IOSMemberSharedStatusSheet: View {
+    let member: IOSMemberDetailRoute
+    let bootstrap: NodeBootstrapModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading) {
+                    Text("Shared Status").font(.headline)
+                    Text(member.displayName).font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding()
+            Form {
+                if let peerID = member.deviceID {
+                    SharedStatusSection(
+                        profileID: member.profileID, peerID: peerID, peerName: member.displayName,
+                        isOnline: bootstrap.profileID == member.profileID.rawValue && bootstrap.memberStatus(
+                            profileID: member.profileID, nodeID: peerID,
+                            credentialID: member.credentialID, isLocalDevice: false
+                        ) == .online,
+                        bootstrap: bootstrap, showsHeader: false
+                    )
+                    .id(member.id)
+                }
+            }
+            .contentMargins(.top, 0, for: .scrollContent)
+        }
+    }
+}
+
 private struct IOSMemberDetailView: View {
     let member: IOSMemberDetailRoute
     let bootstrap: NodeBootstrapModel
 
-    @State private var displayName: String
-    @State private var nameDraft: String
-    @State private var isEditingName = false
+    private var currentPeer: NetworkMemberSummary? {
+        guard status == .online, bootstrap.profileID == member.profileID.rawValue,
+              let id = member.deviceID else { return nil }
+        return bootstrap.networkMembers.first { $0.id == id }
+    }
 
-    init(member: IOSMemberDetailRoute, bootstrap: NodeBootstrapModel) {
-        self.member = member
-        self.bootstrap = bootstrap
-        _displayName = State(initialValue: member.displayName)
-        _nameDraft = State(initialValue: member.displayName)
+    private var status: NetworkMemberStatus {
+        bootstrap.memberStatus(
+            profileID: member.profileID,
+            nodeID: member.deviceID,
+            credentialID: member.credentialID,
+            isLocalDevice: member.isLocalDevice
+        )
+    }
+
+    private var statusColor: Color {
+        switch status {
+        case .online: .green
+        case .offline, .unknown: .secondary
+        case .revoked: .red
+        }
     }
 
     var body: some View {
         Form {
             Section("Device") {
-                LabeledContent("Name", value: displayName)
-                    .contentShape(Rectangle())
-                    .onLongPressGesture {
-                        guard member.isLocalDevice else { return }
-                        nameDraft = displayName
-                        isEditingName = true
+                if !member.isLocalDevice {
+                    LabeledContent("Reported IPv4", value: currentPeer?.deviceIPAddress ?? "--")
+                    LabeledContent("Connection IP") {
+                        Text(currentPeer?.connectionIPAddress ?? "--")
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
+                }
+                LabeledContent("Name", value: currentPeer?.displayName ?? member.displayName)
 
-                LabeledContent("Device ID") {
+                LabeledContent("Node ID") {
                     if let deviceID = member.deviceID {
                         Text(deviceID.uuidString)
                             .font(.caption.monospaced())
@@ -2788,17 +5603,24 @@ private struct IOSMemberDetailView: View {
                 LabeledContent("Status") {
                     HStack(spacing: 6) {
                         Circle()
-                            .fill(member.isOnline ? Color.green : Color.secondary)
+                            .fill(statusColor)
                             .frame(width: 8, height: 8)
                             .accessibilityHidden(true)
 
-                        Text(member.isOnline ? "Online" : "Offline")
-                            .foregroundStyle(member.isOnline ? Color.green : Color.secondary)
+                        Text(status.title)
+                            .foregroundStyle(statusColor)
                     }
                 }
                 .padding(.vertical, -4)
             }
             .listSectionSpacing(20)
+
+            if let peerID = member.deviceID {
+                SharedStatusSection(profileID: member.profileID, peerID: peerID, peerName: currentPeer?.displayName ?? member.displayName,
+                                    isOnline: status == .online && bootstrap.profileID == member.profileID.rawValue,
+                                    bootstrap: bootstrap)
+                    .id("\(member.profileID.rawValue)-\(peerID)")
+            }
 
             Section("Network Membership") {
                 HStack(alignment: .top) {
@@ -2807,32 +5629,53 @@ private struct IOSMemberDetailView: View {
                     Spacer(minLength: 16)
 
                     Text(member.networkName)
-                        .foregroundStyle(member.isActiveNetwork ? Color.green : Color.secondary)
+                        .foregroundStyle(statusColor)
                         .multilineTextAlignment(.trailing)
                 }
             }
         }
-        .navigationTitle(displayName)
+        .navigationTitle(currentPeer?.displayName ?? member.displayName)
         .navigationBarTitleDisplayMode(.inline)
-        .alert("Edit Device Name", isPresented: $isEditingName) {
-            TextField("Device Name", text: $nameDraft)
-            Button("Cancel", role: .cancel) {}
-            Button("Save") {
-                saveDeviceName()
-            }
-            .disabled(nameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        } message: {
-            Text("Enter the name this device advertises to network members.")
-        }
+    }
+}
+
+/// Aligns the disclosure control with the network name instead of the
+/// middle of its three-line label. Nested groups retain their system style.
+private struct NetworkDisclosureGroupStyle<MenuContent: View>: DisclosureGroupStyle {
+    private let menuContent: () -> MenuContent
+
+    init(@ViewBuilder menuContent: @escaping () -> MenuContent) {
+        self.menuContent = menuContent
     }
 
-    private func saveDeviceName() {
-        let normalizedName = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard member.isLocalDevice, !normalizedName.isEmpty else { return }
-        displayName = normalizedName
-        bootstrap.deviceFriendlyName = normalizedName
-        Task {
-            await bootstrap.applyDeviceFriendlyName()
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            withAnimation {
+                configuration.isExpanded.toggle()
+            }
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                configuration.label
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.body.weight(.semibold))
+                    .imageScale(.small)
+                    .fixedSize()
+                    .foregroundStyle(.primary)
+                    .flipsForRightToLeftLayoutDirection(true)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(configuration.isExpanded ? Text("Expanded") : Text("Collapsed"))
+        // Attach actions to the interactive row, not inside its button label.
+        .contextMenu { menuContent() }
+
+        if configuration.isExpanded {
+            configuration.content
+                .disclosureGroupStyle(.automatic)
+                .padding(.leading, 20)
         }
     }
 }
@@ -2841,18 +5684,111 @@ private struct IOSNetworkOverviewSection: View {
     let network: NetworkSummary
     let incomingCount: Int
     let outgoingCount: Int
+    let sentCount: Int
+    let trashCount: Int
     let localDeviceName: String
     let localDeviceID: UUID?
+    let localDeviceIsMember: Bool
+    let isStarting: Bool
     let members: [NetworkMemberSummary]
+    let membershipIssue: LocalizedStringResource?
     let onlineMemberIDs: Set<UUID>
     let connectivity: ActiveNetworkConnectivity
+    let appleNetworkSnapshot: AppleNetworkSnapshot
+    let showDetails: () -> Void
+    let showMessagingHealth: () -> Void
+    let showSharedStatus: (IOSMemberDetailRoute) -> Void
+    let makeActive: () -> Void
+    let requestRemoval: () -> Void
     @Binding var networkIsExpanded: Bool
     @Binding var mailboxesAreExpanded: Bool
     @Binding var membersAreExpanded: Bool
+    @State private var unavailableActivationFeedbackSequence = 0
+    @State private var showingConnectionInfo = false
 
     var body: some View {
         Section {
             DisclosureGroup(isExpanded: $networkIsExpanded) {
+                DisclosureGroup(isExpanded: $membersAreExpanded) {
+                    if localDeviceIsMember {
+                        NavigationLink(value: IOSMemberDetailRoute(
+                            profileID: network.id,
+                            credentialID: nil,
+                            networkName: network.displayName,
+                            deviceID: localDeviceID,
+                            displayName: localDeviceName,
+                            isLocalDevice: true,
+                            isOnline: network.isActive && !isStarting && connectivity.isLocalDeviceOnline,
+                            isActiveNetwork: network.isActive
+                        )) {
+                            IOSNetworkMemberRow(
+                                displayName: localDeviceName,
+                                isLocalDevice: true,
+                                isOnline: network.isActive && !isStarting && connectivity.isLocalDeviceOnline,
+                                presenceKnown: network.isActive,
+                                deviceIPAddress: appleNetworkSnapshot.localIPv4Address
+                            )
+                        }
+                        .navigationLinkIndicatorVisibility(.hidden)
+                        .contextMenu {
+                            Button("Shared Status", systemImage: "info.circle") {}
+                                .disabled(true)
+                        }
+                    }
+
+                    ForEach(members) { member in
+                        NavigationLink(value: IOSMemberDetailRoute(
+                            profileID: network.id,
+                            credentialID: member.credentialID,
+                            networkName: network.displayName,
+                            deviceID: member.id,
+                            displayName: member.displayName,
+                            isLocalDevice: false,
+                            isOnline: onlineMemberIDs.contains(member.id),
+                            isActiveNetwork: network.isActive
+                        )) {
+                            IOSNetworkMemberRow(
+                                displayName: member.displayName,
+                                isLocalDevice: false,
+                                isOnline: onlineMemberIDs.contains(member.id),
+                                presenceKnown: network.isActive,
+                                deviceIPAddress: onlineMemberIDs.contains(member.id) ? member.deviceIPAddress : nil
+                            )
+                        }
+                        .navigationLinkIndicatorVisibility(.hidden)
+                        .contextMenu {
+                            Button("Shared Status", systemImage: "info.circle") {
+                                showSharedStatus(IOSMemberDetailRoute(
+                                    profileID: network.id,
+                                    credentialID: member.credentialID,
+                                    networkName: network.displayName,
+                                    deviceID: member.id,
+                                    displayName: member.displayName,
+                                    isLocalDevice: false,
+                                    isOnline: onlineMemberIDs.contains(member.id),
+                                    isActiveNetwork: network.isActive
+                                ))
+                            }
+                        }
+                    }
+
+                    if !localDeviceIsMember && !isStarting {
+                        Text("Network setup needs attention. Open Network Parameters and check Last Error for details.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    } else if !network.isActive, let membershipIssue {
+                        Text(membershipIssue)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if network.isActive && members.isEmpty {
+                        Text("No other members have been discovered.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } label: {
+                    Label("Members", systemImage: "shareplay")
+                }
+
                 DisclosureGroup(isExpanded: $mailboxesAreExpanded) {
                     NavigationLink(value: MailboxSelection(networkID: network.id, mailbox: .inbox)) {
                         HStack {
@@ -2871,92 +5807,230 @@ private struct IOSNetworkOverviewSection: View {
                         .padding(.vertical, -7)
                         .badge(outgoingCount)
                     }
+
+                    NavigationLink(value: MailboxSelection(networkID: network.id, mailbox: .sentItems)) {
+                        HStack {
+                            Image(systemName: "paperplane")
+                            Text("Sent Items")
+                        }
+                        .padding(.vertical, -7)
+                        .badge(sentCount)
+                    }
+
+                    NavigationLink(value: MailboxSelection(networkID: network.id, mailbox: .trash)) {
+                        HStack {
+                            Image(systemName: "trash")
+                            Text("Trash")
+                        }
+                        .padding(.vertical, -7)
+                        .badge(trashCount)
+                    }
                 } label: {
-                    Label("Mailboxes", systemImage: "tray")
+                    Label("Mailboxes", systemImage: "tray.2")
                 }
 
-                DisclosureGroup(isExpanded: $membersAreExpanded) {
-                NavigationLink(value: IOSMemberDetailRoute(
-                    networkName: network.displayName,
-                    deviceID: localDeviceID,
-                    displayName: localDeviceName,
-                    isLocalDevice: true,
-                    isOnline: network.isActive,
-                    isActiveNetwork: network.isActive
-                )) {
-                    IOSNetworkMemberRow(
-                        displayName: localDeviceName,
-                        detail: "This Device",
-                        isOnline: network.isActive
+            } label: {
+                HStack(alignment: .top, spacing: 8) {
+                    NetworkMailboxHeader(
+                        name: network.displayName,
+                        isActive: network.isActive,
+                        connectivity: connectivity,
+                        requiresAttention: !localDeviceIsMember && !isStarting,
+                        isStarting: isStarting,
+                        appleNetworkSnapshot: appleNetworkSnapshot,
+                        topSpacingAdjustment: 0,
+                        credentialStatus: network.credentialStatus
                     )
-                }
-
-                ForEach(members) { member in
-                    NavigationLink(value: IOSMemberDetailRoute(
-                        networkName: network.displayName,
-                        deviceID: member.id,
-                        displayName: member.displayName,
-                        isLocalDevice: false,
-                        isOnline: onlineMemberIDs.contains(member.id),
-                        isActiveNetwork: network.isActive
-                    )) {
-                        IOSNetworkMemberRow(
-                            displayName: member.displayName,
-                            detail: nil,
-                            isOnline: onlineMemberIDs.contains(member.id)
-                        )
+                    if network.isActive {
+                        Button(action: showMessagingHealth) {
+                            ActiveMessagingIndicator(health: network.messagingHealth, message: network.messagingHealthMessage)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
+                .accessibilityElement(children: .combine)
+                .padding(.vertical, -5)
+                .contentShape(Rectangle())
 
-                if !network.isActive {
-                    Text("Make this network active to update its members.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if members.isEmpty {
-                    Text("No other members have been discovered.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                } label: {
-                    Label("Members", systemImage: "shareplay")
-                }
-            } label: {
-                NetworkMailboxHeader(
-                    name: network.displayName,
-                    isActive: network.isActive,
-                    connectivity: connectivity,
-                    topSpacingAdjustment: 0
-                )
             }
         }
+        .disclosureGroupStyle(NetworkDisclosureGroupStyle {
+            Button("Connection Info", systemImage: "info.circle") {
+                showingConnectionInfo = true
+            }
+            Button("View Parameters", systemImage: "slider.horizontal.3", action: showDetails)
+            Divider()
+            Button("Use for Messaging", systemImage: "bubble.left.fill", action: requestMakeActive)
+                .disabled(network.isActive)
+            Divider()
+            Button(
+                network.isHostingAuthority ? "Delete Network…" : "Forget Network…",
+                systemImage: network.isHostingAuthority
+                    ? "trash"
+                    : "rectangle.portrait.and.arrow.right",
+                role: .destructive,
+                action: requestRemoval
+            )
+        })
         .listSectionSpacing(22)
+        .sensoryFeedback(.warning, trigger: unavailableActivationFeedbackSequence)
+        .sheet(isPresented: $showingConnectionInfo) {
+            NavigationStack {
+                Form {
+                    Section("This Device’s Connection") {
+                        Text(appleNetworkSnapshot.connectionDetail)
+                    }
+                    Section("Beakr Connectivity") {
+                        Text(connectionGuidance)
+                    }
+                    WiFiNamePermissionSection()
+                }
+                .navigationTitle("Connection Info")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showingConnectionInfo = false }
+                    }
+                }
+            }
+        }
+    }
+
+    private var connectionGuidance: LocalizedStringResource {
+        guard network.isActive else {
+            return "Choose Use for Messaging to use this network for messaging on this device."
+        }
+        if case .connected(let count) = connectivity {
+            return "Securely connected to \(count) other devices. The IP address shown belongs to this device, not the router."
+        }
+        if let status = network.credentialStatus {
+            return "\(status.title). Open Services → Messaging for credential details and recovery."
+        }
+        if connectivity == .failed {
+            return "The local connection failed. Check Wi-Fi or Ethernet, then pull down to retry. Open Network Parameters for more details."
+        }
+        if isStarting {
+            return "Beakr is restoring this device’s identity and checking its network membership before starting local discovery."
+        }
+        if !localDeviceIsMember {
+            return "Network setup needs attention. Open Network Parameters for details."
+        }
+        switch connectivity {
+        case .readyNoPeers:
+            return "This network is operational on this device. No other devices are online. Open Beakr on another device on the same local network to connect."
+        case .discoveringPeers:
+            return "Open Beakr on another device on the same local network. Check that both devices can reach one another; guest Wi-Fi or router isolation may prevent discovery."
+        case .reconnecting:
+            return "Beakr is checking the local connection and restarting discovery."
+        case .inactive:
+            return "Check that Wi-Fi or Ethernet is connected, then pull down to retry."
+        case .localNetworkDenied:
+            return "Enable Local Network permission for Beakr in Settings."
+        case .connected, .failed:
+            return "Open Network Parameters for connection details."
+        }
+    }
+
+    private func requestMakeActive() {
+        if network.isActive {
+            unavailableActivationFeedbackSequence += 1
+        } else {
+            makeActive()
+        }
     }
 }
 
 private struct IOSNetworkMemberRow: View {
     let displayName: String
-    let detail: LocalizedStringResource?
+    let isLocalDevice: Bool
     let isOnline: Bool
+    var presenceKnown = true
+    var deviceIPAddress: String? = nil
 
     var body: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(isOnline ? Color.green : Color.secondary.opacity(0.45))
-                .frame(width: 9, height: 9)
-                .accessibilityHidden(true)
+        HStack(alignment: .top, spacing: 10) {
+            // Measure one line in the name's font so icons stay centered on
+            // its first line, including with Dynamic Type or wrapped names.
+            ZStack {
+                Text(verbatim: " ")
+                    .fixedSize()
+                    .hidden()
+                    .frame(width: 0)
+                Circle()
+                    .fill(isOnline ? Color.green : Color.secondary.opacity(0.45))
+                    .frame(width: 9, height: 9)
+            }
+            .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(displayName)
-                if let detail {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if !presenceKnown {
+                    Text("UnObserved").font(.caption).foregroundStyle(.secondary)
                 }
+                Text(isLocalDevice
+                     ? LocalizedStringResource("This Device IP: \(deviceIPAddress ?? "--")")
+                     : LocalizedStringResource("Device IP: \(deviceIPAddress ?? "--")"))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
+
+            Spacer(minLength: 0)
+
+            ZStack {
+                Text(verbatim: " ")
+                    .fixedSize()
+                    .hidden()
+                    .frame(width: 0)
+                Image(systemName: "chevron.forward")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .accessibilityHidden(true)
         }
         .padding(.vertical, -7)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(isOnline ? "Online" : "Offline")
+        .accessibilityValue(!presenceKnown ? "UnObserved" : (isOnline ? "Online" : "Offline"))
+    }
+}
+
+private struct IOSIncomingMessageDetail: View {
+    let message: IncomingMessage
+    let senderName: String
+    let model: MessageComposerModel
+    let isActiveNetwork: Bool
+    @State private var showingReply = false
+
+    private var canReply: Bool {
+        isActiveNetwork && message.source.map { model.isAddressable($0) } == true
+    }
+
+    var body: some View {
+        MailMessageDetail(
+            heading: senderName,
+            address: message.source?.uuidString,
+            metadata: message.receivedAt.formatted(date: .abbreviated, time: .shortened),
+            messageBody: message.body
+        )
+        .toolbar {
+            if isActiveNetwork {
+                ToolbarItem(placement: .bottomBar) {
+                    Button("Reply", systemImage: "arrowshape.turn.up.left") {
+                        guard canReply else { return }
+                        model.prepareReply(to: message)
+                        showingReply = true
+                    }
+                    .disabled(!canReply)
+                    .accessibilityIdentifier("replyToMessage")
+                }
+            }
+        }
+        .sheet(isPresented: $showingReply, onDismiss: model.discardDraft) {
+            IOSMessageComposerView(model: model, dismiss: { showingReply = false })
+        }
+        .onChange(of: isActiveNetwork) { _, active in
+            if !active { showingReply = false }
+        }
     }
 }
 
@@ -2964,15 +6038,34 @@ private struct ArchivedContextMailboxView: View {
     @Environment(\.dismiss) private var dismiss
     let contextID: ContextID
     let contextName: String
+    let archiveReason: ContextArchiveReason?
     let mailbox: Mailbox
     let incomingMessages: [IncomingMessage]
     let mailboxMetadata: ContextMailboxMetadata
     let deleteContext: (ContextID) async -> Void
     @State private var confirmingDeletion = false
 
+    private var visibleOutgoingMessages: [OutgoingMessage] {
+        if mailbox == .trash {
+            return mailboxMetadata.outgoingMessages.filter { mailboxMetadata.trashedMessageIDs.contains($0.id) }
+        }
+        return mailboxMetadata.outgoingMessages.filter {
+            !mailboxMetadata.trashedMessageIDs.contains($0.id) && mailbox.includes($0)
+        }
+    }
+
+    private var visibleIncomingMessages: [IncomingMessage] {
+        mailbox == .trash
+            ? incomingMessages.filter { mailboxMetadata.trashedMessageIDs.contains($0.id) }
+            : incomingMessages.filter { !mailboxMetadata.trashedMessageIDs.contains($0.id) }
+    }
+
     var body: some View {
         List {
             Section {
+                if archiveReason == .membershipRevoked {
+                    RevokedContextExplanation()
+                }
                 Label("Preserved Context — Read Only", systemImage: "archivebox")
                     .foregroundStyle(.secondary)
                 LabeledContent("Context", value: contextName)
@@ -2982,7 +6075,7 @@ private struct ArchivedContextMailboxView: View {
 
             switch mailbox {
             case .inbox:
-                ForEach(incomingMessages) { message in
+                ForEach(visibleIncomingMessages) { message in
                     NavigationLink {
                         MailMessageDetail(
                             heading: message.source.map { displayName(for: $0) } ?? "Unknown Sender",
@@ -3001,8 +6094,46 @@ private struct ArchivedContextMailboxView: View {
                         )
                     }
                 }
-            case .outbox:
-                ForEach(mailboxMetadata.outgoingMessages) { message in
+            case .outbox, .sentItems:
+                ForEach(visibleOutgoingMessages) { message in
+                    NavigationLink {
+                        MailMessageDetail(
+                            heading: displayName(for: message.destination),
+                            address: message.destination.uuidString,
+                            metadata: message.state.detailTitle,
+                            messageBody: message.body
+                        )
+                    } label: {
+                        OutgoingMailRow(
+                            recipient: displayName(for: message.destination),
+                            messageBody: message.body,
+                            state: message.state,
+                            deliveredAt: message.deliveredAt,
+                            openedAt: message.openedAt
+                        )
+                    }
+                }
+            case .trash:
+                ForEach(visibleIncomingMessages) { message in
+                    NavigationLink {
+                        MailMessageDetail(
+                            heading: message.source.map { displayName(for: $0) } ?? "Unknown Sender",
+                            address: message.source?.uuidString,
+                            metadata: message.receivedAt.formatted(date: .abbreviated, time: .shortened),
+                            messageBody: message.body
+                        )
+                    } label: {
+                        IncomingMailRow(
+                            sender: message.source.map { displayName(for: $0) } ?? "Unknown Sender",
+                            subject: message.subject,
+                            preview: message.preview,
+                            receivedAt: message.receivedAt,
+                            isRead: mailboxMetadata.readMessageIDs.contains(message.id),
+                            isFlagged: mailboxMetadata.flaggedMessageIDs.contains(message.id)
+                        )
+                    }
+                }
+                ForEach(visibleOutgoingMessages) { message in
                     NavigationLink {
                         MailMessageDetail(
                             heading: displayName(for: message.destination),
@@ -3023,10 +6154,12 @@ private struct ArchivedContextMailboxView: View {
             }
         }
         .overlay {
-            if mailbox == .inbox && incomingMessages.isEmpty {
-                ContentUnavailableView("No Preserved Messages", systemImage: "tray")
-            } else if mailbox == .outbox && mailboxMetadata.outgoingMessages.isEmpty {
-                ContentUnavailableView("No Preserved Messages", systemImage: "paperplane")
+            if mailbox == .inbox && visibleIncomingMessages.isEmpty {
+                ContentUnavailableView("No Preserved Messages", systemImage: "tray.and.arrow.down")
+            } else if mailbox == .trash && visibleIncomingMessages.isEmpty && visibleOutgoingMessages.isEmpty {
+                ContentUnavailableView("No Preserved Messages", systemImage: "trash")
+            } else if mailbox != .inbox && mailbox != .trash && visibleOutgoingMessages.isEmpty {
+                ContentUnavailableView("No Preserved Messages", systemImage: mailbox.systemImage)
             }
         }
         .navigationTitle(mailbox.title)
@@ -3063,17 +6196,32 @@ private struct IOSMailboxMessageListView: View {
     let networkConnectivity: ActiveNetworkConnectivity
     let appleNetworkSnapshot: AppleNetworkSnapshot
     let model: MessageComposerModel
-    let switchNetwork: (NetworkProfileID) -> Void
+    let isActiveNetwork: Bool
+    let storedIncomingMessages: [IncomingMessage]
+    let storedMailboxMetadata: ContextMailboxMetadata
+    let makeActive: () -> Void
     let refresh: () async -> Void
     @State private var showingComposer = false
     @State private var inboxFilter = InboxFilter.all
     @State private var searchText = ""
     @State private var visibleIncomingMessages: [IncomingMessage] = []
+    @State private var selectedIncomingMessage: IncomingMessage?
     @State private var refreshPhase = NetworkRefreshPhase.idle
     @State private var refreshResultDismissTask: Task<Void, Never>?
     @State private var pullStage = NetworkPullStage.hidden
     @State private var armedHapticSequence = 0
     @State private var presentedMessageInfo: PresentedMessageInfo?
+
+    private var visibleOutgoingMessages: [OutgoingMessage] {
+        let messages = isActiveNetwork ? model.outgoingMessages : storedMailboxMetadata.outgoingMessages
+        let trashedMessageIDs = isActiveNetwork ? model.trashedMessageIDs : storedMailboxMetadata.trashedMessageIDs
+        if selection.mailbox == .trash {
+            return messages.filter { trashedMessageIDs.contains($0.id) }
+        }
+        return messages.filter {
+            !trashedMessageIDs.contains($0.id) && selection.mailbox.includes($0)
+        }
+    }
 
     var body: some View {
         List {
@@ -3097,37 +6245,39 @@ private struct IOSMailboxMessageListView: View {
                         networkName: networkName,
                         networkConnectivity: networkConnectivity,
                         mailbox: .inbox,
-                        unreadCount: model.unreadIncomingCount,
+                        unreadCount: sourceIncomingMessages.lazy.filter { !isRead($0.id) }.count,
                         queuedCount: 0,
-                        messageCount: model.incomingMessages.count,
-                        lastUpdated: model.incomingMessages.first?.receivedAt
+                        messageCount: sourceIncomingMessages.count,
+                        lastUpdated: sourceIncomingMessages.first?.receivedAt
                     )
                 }
 
                 ForEach(visibleIncomingMessages) { message in
                     incomingMessageLink(for: message)
                 }
-            case .outbox:
+            case .outbox, .sentItems:
                 Section {
                     EmptyView()
                 } header: {
                     MailboxSummaryHeader(
                         networkName: networkName,
                         networkConnectivity: networkConnectivity,
-                        mailbox: .outbox,
+                        mailbox: selection.mailbox,
                         unreadCount: 0,
-                        queuedCount: model.outgoingMessages.lazy.filter {
-                            $0.state == .queued || $0.state == .sending
-                        }.count,
-                        messageCount: model.outgoingMessages.count,
-                        lastUpdated: model.outgoingMessages.first.flatMap { $0.openedAt ?? $0.deliveredAt }
+                        queuedCount: selection.mailbox == .outbox
+                            ? visibleOutgoingMessages.lazy.filter {
+                                $0.state == .queued || $0.state == .sending
+                            }.count
+                            : 0,
+                        messageCount: visibleOutgoingMessages.count,
+                        lastUpdated: visibleOutgoingMessages.first.flatMap { $0.openedAt ?? $0.deliveredAt }
                     )
                 }
 
-                ForEach(model.outgoingMessages) { message in
+                ForEach(visibleOutgoingMessages) { message in
                     NavigationLink {
                         MailMessageDetail(
-                            heading: model.displayName(for: message.destination),
+                            heading: displayName(for: message.destination),
                             address: message.destination.uuidString,
                             metadata: message.state.detailTitle,
                             messageBody: message.body
@@ -3135,7 +6285,7 @@ private struct IOSMailboxMessageListView: View {
                     } label: {
                         HStack(alignment: .top, spacing: 8) {
                             OutgoingMailRow(
-                                recipient: model.displayName(for: message.destination),
+                                recipient: displayName(for: message.destination),
                                 messageBody: message.body,
                                 state: message.state,
                                 deliveredAt: message.deliveredAt,
@@ -3151,35 +6301,90 @@ private struct IOSMailboxMessageListView: View {
                     .buttonStyle(.plain)
                     .navigationLinkIndicatorVisibility(.hidden)
                     .contextMenu {
-                        ControlGroup {
-                            Button("Send Again", systemImage: "paperplane") {
-                                model.prepareResend(to: message.destination, body: message.body)
-                                showingComposer = true
-                            }
+                        if isActiveNetwork {
+                            ControlGroup {
+                                Button("Send Again", systemImage: "paperplane") {
+                                    model.prepareResend(to: message.destination, body: message.body)
+                                    showingComposer = true
+                                }
 
-                            Button("Forward", systemImage: "arrowshape.turn.up.right") {
-                                model.prepareForward(body: message.body)
-                                showingComposer = true
+                                Button("Forward", systemImage: "arrowshape.turn.up.right") {
+                                    model.prepareForward(body: message.body)
+                                    showingComposer = true
+                                }
                             }
+                            .controlGroupStyle(.palette)
+
+                            Divider()
                         }
-                        .controlGroupStyle(.palette)
-
-                        Divider()
 
                         Button("Message Info", systemImage: "info.circle") {
                             presentedMessageInfo = .outgoing(message)
                         }
                     } preview: {
                         MessageContextPreview(
-                            heading: model.displayName(for: message.destination),
+                            heading: displayName(for: message.destination),
                             metadata: message.state.detailTitle,
                             subject: nil,
                             messageBody: message.body
                         )
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button("Delete", systemImage: "trash", role: .destructive) {
-                            Task { await model.deleteOutgoingMessage(id: message.id) }
+                        if isActiveNetwork {
+                            Button("Delete", systemImage: "trash", role: .destructive) {
+                                Task { await model.deleteOutgoingMessage(id: message.id) }
+                            }
+                        }
+                    }
+                }
+            case .trash:
+                Section {
+                    EmptyView()
+                } header: {
+                    MailboxSummaryHeader(
+                        networkName: networkName,
+                        networkConnectivity: networkConnectivity,
+                        mailbox: .trash,
+                        unreadCount: 0,
+                        queuedCount: 0,
+                        messageCount: visibleIncomingMessages.count + visibleOutgoingMessages.count,
+                        lastUpdated: nil
+                    )
+                }
+
+                ForEach(visibleIncomingMessages) { message in
+                    incomingMessageLink(for: message)
+                }
+                ForEach(visibleOutgoingMessages) { message in
+                    NavigationLink {
+                        MailMessageDetail(
+                            heading: displayName(for: message.destination),
+                            address: message.destination.uuidString,
+                            metadata: message.state.detailTitle,
+                            messageBody: message.body
+                        )
+                    } label: {
+                        OutgoingMailRow(
+                            recipient: displayName(for: message.destination),
+                            messageBody: message.body,
+                            state: message.state,
+                            deliveredAt: message.deliveredAt,
+                            openedAt: message.openedAt
+                        )
+                    }
+                    .swipeActions(edge: .leading) {
+                        if isActiveNetwork {
+                            Button("Restore", systemImage: "arrow.uturn.backward") {
+                                model.restoreMessage(id: message.id)
+                            }
+                            .tint(.blue)
+                        }
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        if isActiveNetwork {
+                            Button("Delete Permanently", systemImage: "trash.slash", role: .destructive) {
+                                model.permanentlyDeleteOutgoingMessage(id: message.id)
+                            }
                         }
                     }
                 }
@@ -3201,14 +6406,20 @@ private struct IOSMailboxMessageListView: View {
                     searchText.isEmpty && inboxFilter == .all ? "No Messages" : "No Matching Messages",
                     systemImage: searchText.isEmpty && inboxFilter == .all ? "tray" : "line.3.horizontal.decrease.circle"
                 )
-            } else if selection.mailbox == .outbox && model.outgoingMessages.isEmpty {
-                ContentUnavailableView("No Messages", systemImage: "paperplane")
+            } else if selection.mailbox == .trash && visibleIncomingMessages.isEmpty && visibleOutgoingMessages.isEmpty {
+                ContentUnavailableView("No Messages", systemImage: "trash")
+            } else if selection.mailbox != .inbox && selection.mailbox != .trash && visibleOutgoingMessages.isEmpty {
+                ContentUnavailableView("No Messages", systemImage: selection.mailbox.systemImage)
             }
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if selection.mailbox == .inbox {
+            if !isActiveNetwork {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Use for Messaging", systemImage: "bubble.left.fill", action: makeActive)
+                }
+            } else if selection.mailbox == .inbox {
                 ToolbarItemGroup(placement: .bottomBar) {
                     Menu {
                         Picker("Filter", selection: $inboxFilter) {
@@ -3226,58 +6437,72 @@ private struct IOSMailboxMessageListView: View {
                         .accessibilityLabel("Search Inbox")
 
                     Button("Compose", systemImage: "square.and.pencil") {
+                        model.discardDraft()
                         showingComposer = true
                     }
                 }
             } else {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Compose", systemImage: "square.and.pencil") {
+                        model.discardDraft()
                         showingComposer = true
                     }
                 }
             }
         }
-        .onAppear {
-            if let networkID = selection.networkID {
-                switchNetwork(networkID)
-            }
-            updateVisibleIncomingMessages()
-        }
+        .onAppear { updateVisibleIncomingMessages() }
+        .onChange(of: storedIncomingMessages) { _, _ in updateVisibleIncomingMessages() }
+        .onChange(of: storedMailboxMetadata) { _, _ in updateVisibleIncomingMessages() }
+        .onChange(of: isActiveNetwork) { _, _ in updateVisibleIncomingMessages() }
         .onChange(of: model.incomingMessages) { _, _ in updateVisibleIncomingMessages() }
         .onChange(of: model.readMessageIDs) { _, _ in updateVisibleIncomingMessages() }
         .onChange(of: model.flaggedMessageIDs) { _, _ in updateVisibleIncomingMessages() }
+        .onChange(of: model.trashedMessageIDs) { _, _ in updateVisibleIncomingMessages() }
         .onChange(of: inboxFilter) { _, _ in updateVisibleIncomingMessages() }
         .onChange(of: searchText) { _, _ in updateVisibleIncomingMessages() }
         .onChange(of: scenePhase) { _, phase in
             guard phase != .active else { return }
             cancelNetworkRefreshPresentation()
         }
-        .sheet(isPresented: $showingComposer) {
+        .sheet(isPresented: $showingComposer, onDismiss: model.discardDraft) {
             IOSMessageComposerView(model: model, dismiss: { showingComposer = false })
         }
         .sheet(item: $presentedMessageInfo) { info in
             MessageInfoView(info: info)
         }
+        // Own the destination outside the rows: marking an unread message
+        // read can remove its row without dismissing the open message.
+        .navigationDestination(isPresented: Binding(
+            get: { selectedIncomingMessage != nil },
+            set: { if !$0 { selectedIncomingMessage = nil } }
+        )) {
+            if let message = selectedIncomingMessage {
+                IOSIncomingMessageDetail(
+                    message: message,
+                    senderName: message.source.map(displayName) ?? "Unknown Sender",
+                    model: model,
+                    isActiveNetwork: isActiveNetwork
+                )
+                .task {
+                    guard isActiveNetwork else { return }
+                    await model.openIncomingMessage(message)
+                }
+            }
+        }
     }
 
     private func incomingMessageLink(for message: IncomingMessage) -> some View {
-        NavigationLink {
-            MailMessageDetail(
-                heading: message.source.map(model.displayName) ?? "Unknown Sender",
-                address: message.source?.uuidString,
-                metadata: message.receivedAt.formatted(date: .abbreviated, time: .shortened),
-                messageBody: message.body
-            )
-            .task { await model.openIncomingMessage(message) }
+        Button {
+            selectedIncomingMessage = message
         } label: {
             HStack(alignment: .top, spacing: 8) {
                 IncomingMailRow(
-                    sender: message.source.map(model.displayName) ?? "Unknown Sender",
+                    sender: message.source.map(displayName) ?? "Unknown Sender",
                     subject: message.subject,
                     preview: message.preview,
                     receivedAt: message.receivedAt,
-                    isRead: model.isRead(message.id),
-                    isFlagged: model.isFlagged(message.id)
+                    isRead: isRead(message.id),
+                    isFlagged: isFlagged(message.id)
                 )
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
@@ -3285,36 +6510,51 @@ private struct IOSMailboxMessageListView: View {
                     .padding(.top, 6)
                     .accessibilityHidden(true)
             }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .navigationLinkIndicatorVisibility(.hidden)
-        .simultaneousGesture(TapGesture().onEnded {
-            // Commit the unread-to-read transition at selection time. This
-            // avoids depending on the destination view's appearance timing.
-            model.setRead(true, messageID: message.id)
-            Task { await model.openIncomingMessage(message) }
-        })
+        .accessibilityHint("Opens message")
         .swipeActions(edge: .leading) {
-            Button(model.isRead(message.id) ? "Unread" : "Read") {
-                model.setRead(!model.isRead(message.id), messageID: message.id)
+            if !isActiveNetwork {
+                EmptyView()
+            } else if selection.mailbox == .trash {
+                Button("Restore", systemImage: "arrow.uturn.backward") {
+                    model.restoreMessage(id: message.id)
+                }
+                .tint(.blue)
+            } else {
+                Button(model.isRead(message.id) ? "Unread" : "Read") {
+                    model.setRead(!model.isRead(message.id), messageID: message.id)
+                }
+                .tint(.blue)
             }
-            .tint(.blue)
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button("Delete", systemImage: "trash", role: .destructive) {
-                Task { await model.deleteIncomingMessage(id: message.id) }
+            if !isActiveNetwork {
+                EmptyView()
+            } else if selection.mailbox == .trash {
+                Button("Delete Permanently", systemImage: "trash.slash", role: .destructive) {
+                    Task { await model.permanentlyDeleteIncomingMessage(id: message.id) }
+                }
+            } else {
+                Button("Delete", systemImage: "trash", role: .destructive) {
+                    Task { await model.deleteIncomingMessage(id: message.id) }
+                }
             }
 
-            Button(model.isFlagged(message.id) ? "Unflag" : "Flag") {
-                model.toggleFlag(messageID: message.id)
+            if isActiveNetwork {
+                Button(model.isFlagged(message.id) ? "Unflag" : "Flag") {
+                    model.toggleFlag(messageID: message.id)
+                }
+                .tint(.orange)
             }
-            .tint(.orange)
         }
         .contextMenu {
-            ControlGroup {
+            if isActiveNetwork {
+                ControlGroup {
                 if let source = message.source, model.isAddressable(source) {
                     Button("Reply", systemImage: "arrowshape.turn.up.left") {
-                        model.prepareReply(to: source)
+                        model.prepareReply(to: message)
                         showingComposer = true
                     }
                 }
@@ -3323,33 +6563,36 @@ private struct IOSMailboxMessageListView: View {
                     model.prepareForward(body: message.body)
                     showingComposer = true
                 }
-            }
-            .controlGroupStyle(.palette)
+                }
+                .controlGroupStyle(.palette)
 
-            Divider()
-
-            Button(
-                model.isRead(message.id) ? "Mark as Unread" : "Mark as Read",
-                systemImage: model.isRead(message.id) ? "envelope.badge" : "envelope.open"
-            ) {
-                model.setRead(!model.isRead(message.id), messageID: message.id)
+                Divider()
             }
 
-            Button(
-                model.isFlagged(message.id) ? "Unflag" : "Flag",
-                systemImage: model.isFlagged(message.id) ? "flag.slash" : "flag"
-            ) {
-                model.toggleFlag(messageID: message.id)
-            }
+            if isActiveNetwork {
+                Button(
+                    model.isRead(message.id) ? "Mark as Unread" : "Mark as Read",
+                    systemImage: model.isRead(message.id) ? "envelope.badge" : "envelope.open"
+                ) {
+                    model.setRead(!model.isRead(message.id), messageID: message.id)
+                }
 
-            Divider()
+                Button(
+                    model.isFlagged(message.id) ? "Unflag" : "Flag",
+                    systemImage: model.isFlagged(message.id) ? "flag.slash" : "flag"
+                ) {
+                    model.toggleFlag(messageID: message.id)
+                }
+
+                Divider()
+            }
 
             Button("Message Info", systemImage: "info.circle") {
                 presentedMessageInfo = .incoming(message)
             }
         } preview: {
             MessageContextPreview(
-                heading: message.source.map(model.displayName) ?? "Unknown Sender",
+                heading: message.source.map(displayName) ?? "Unknown Sender",
                 metadata: message.receivedAt.formatted(date: .abbreviated, time: .shortened),
                 subject: message.subject,
                 messageBody: message.body
@@ -3358,16 +6601,22 @@ private struct IOSMailboxMessageListView: View {
     }
 
     private func updateVisibleIncomingMessages() {
-        visibleIncomingMessages = model.incomingMessages.filter { message in
+        let trashedMessageIDs = isActiveNetwork ? model.trashedMessageIDs : storedMailboxMetadata.trashedMessageIDs
+        visibleIncomingMessages = sourceIncomingMessages.filter { message in
+            let isTrashed = trashedMessageIDs.contains(message.id)
+            if selection.mailbox == .trash {
+                return isTrashed
+            }
+            guard !isTrashed else { return false }
             let matchesFilter = switch inboxFilter {
             case .all: true
-            case .unread: !model.isRead(message.id)
-            case .flagged: model.isFlagged(message.id)
+            case .unread: !isRead(message.id)
+            case .flagged: isFlagged(message.id)
             }
             guard matchesFilter else { return false }
             let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty else { return true }
-            let sender = message.source.map(model.displayName) ?? "Unknown Sender"
+            let sender = message.source.map(displayName) ?? "Unknown Sender"
             return sender.localizedCaseInsensitiveContains(query)
                 || message.subject.localizedCaseInsensitiveContains(query)
                 || message.body.localizedCaseInsensitiveContains(query)
@@ -3375,7 +6624,7 @@ private struct IOSMailboxMessageListView: View {
     }
 
     private func performNetworkRefresh() async {
-        guard refreshPhase != .refreshing else { return }
+        guard isActiveNetwork, refreshPhase != .refreshing else { return }
         refreshResultDismissTask?.cancel()
         pullStage = .hidden
         refreshPhase = .refreshing
@@ -3393,6 +6642,30 @@ private struct IOSMailboxMessageListView: View {
         refreshResultDismissTask?.cancel()
         refreshResultDismissTask = nil
         refreshPhase = .idle
+    }
+
+    private var sourceIncomingMessages: [IncomingMessage] {
+        isActiveNetwork ? model.incomingMessages : storedIncomingMessages
+    }
+
+    private func displayName(for address: UUID) -> String {
+        if isActiveNetwork {
+            return model.displayName(for: address)
+        }
+        return storedMailboxMetadata.recipients.first(where: { $0.id == address })?.name
+            ?? address.uuidString
+    }
+
+    private func isRead(_ messageID: UUID) -> Bool {
+        isActiveNetwork
+            ? model.isRead(messageID)
+            : storedMailboxMetadata.readMessageIDs.contains(messageID)
+    }
+
+    private func isFlagged(_ messageID: UUID) -> Bool {
+        isActiveNetwork
+            ? model.isFlagged(messageID)
+            : storedMailboxMetadata.flaggedMessageIDs.contains(messageID)
     }
 }
 
@@ -3510,6 +6783,7 @@ private struct MailboxPageTitleRow: View {
     var subtitle: LocalizedStringKey? = nil
     var status: LocalizedStringResource? = nil
     var statusDate: Date? = nil
+    var showSubtitleInformation: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -3517,9 +6791,26 @@ private struct MailboxPageTitleRow: View {
                 .font(.largeTitle.bold())
 
             if let subtitle {
-                Text(subtitle)
-                    .font(.title2.bold())
-                    .padding(.top, 18)
+                HStack(spacing: 0) {
+                    Text(subtitle)
+                        .font(.headline.bold())
+                        .foregroundStyle(.secondary)
+
+                    if let showSubtitleInformation {
+                        Button(action: showSubtitleInformation) {
+                            Image(systemName: "info.circle")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 16, height: 16)
+                                .frame(width: 28, height: 28)
+                                .contentShape(Rectangle())
+                        }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("About Network Status Colors")
+                    }
+                }
+                .padding(.top, 18)
             }
 
             if let status {
@@ -3553,36 +6844,92 @@ private struct NetworkMailboxHeader: View {
     let name: String
     let isActive: Bool
     let connectivity: ActiveNetworkConnectivity
+    var requiresAttention = false
+    var isStarting = false
+    let appleNetworkSnapshot: AppleNetworkSnapshot
     let topSpacingAdjustment: CGFloat
+    var credentialStatus: NetworkCredentialStatus? = nil
 
-    var body: some View {
-        Label {
-            Text(name)
-        } icon: {
-            Image(systemName: "network")
+    private var connectionProgress: LocalizedStringResource {
+        guard isActive else { return "Inactive" }
+        if let credentialStatus { return credentialStatus.title }
+        if case .connected(let count) = connectivity {
+            return "\(count + 1) Devices Online"
         }
-        .foregroundStyle(isActive ? networkNameColor : Color.secondary)
-        .textCase(nil)
-        .padding(.top, topSpacingAdjustment)
-        .accessibilityLabel("Network: \(name)")
-        .accessibilityValue(isActive ? connectivity.compactStatusTitle : "Inactive")
+        if connectivity == .failed {
+            return "Connection failed"
+        }
+        if isStarting { return "Preparing connection…" }
+        if requiresAttention { return "Setup needs attention" }
+        switch connectivity {
+        case .discoveringPeers:
+            return "Finding devices…"
+        case .readyNoPeers:
+            return "1 Device Online"
+        case .reconnecting:
+            return "Checking connection…"
+        case .inactive:
+            return "No Beakr network detected"
+        case .localNetworkDenied:
+            return "Local Network Permission Required"
+        case .connected, .failed:
+            return "Checking connection…"
+        }
     }
 
-    private var networkNameColor: Color {
-        switch connectivity {
-        case .inactive:
-            return .secondary
-        case .connected:
-            return .green
-        case .reconnecting, .discoveringPeers, .readyNoPeers, .failed:
-            return .blue
+    private var statusColor: Color {
+        if isStarting { return .blue }
+        if requiresAttention {
+            return .red
         }
+        return isActive ? connectivity.statusColor : .secondary
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: isActive ? "network.badge.shield.half.filled" : "network.slash")
+                .imageScale(.large)
+                .fixedSize()
+                .foregroundStyle(statusColor)
+                .accessibilityHidden(true)
+                .symbolEffect(
+                    .pulse,
+                    options: .repeating.speed(0.7),
+                    isActive: isActive && (isStarting || connectivity.isTransitioning)
+                )
+            VStack(alignment: .leading, spacing: 4) {
+                Text(name)
+                    .foregroundStyle(statusColor)
+                Text(appleNetworkSnapshot.compactConnectionDetail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(connectionProgress)
+                    .font(.subheadline)
+                    .foregroundStyle(connectivity == .localNetworkDenied ? Color.red : Color.secondary)
+                    .lineLimit(connectivity == .localNetworkDenied ? nil : 1)
+                if isActive && connectivity == .localNetworkDenied {
+                    Text("Beakr does not have Local Network permission. Enable it for Beakr in Settings, then return to the app.")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .textCase(nil)
+        .padding(.top, topSpacingAdjustment)
+        .accessibilityElement(children: .combine)
+        .traceNetworkIndicator(
+            "network-mailbox-header",
+            details: "color=\(statusColor) active=\(isActive) starting=\(isStarting) requiresAttention=\(requiresAttention) connectivity=\(connectivity)"
+        )
     }
 }
 
 private enum NetworkRefreshPhase: Equatable {
     case idle
     case refreshing
+    case settling
     case finished
 }
 
@@ -3686,9 +7033,12 @@ private struct NetworkPeekRow: View {
     }
 }
 
-private struct AppleNetworkSnapshot: Equatable {
+#endif
+
+struct AppleNetworkSnapshot: Equatable {
     enum InternetRoute: Equatable {
         case wifi
+        case ethernet
         case cellular
         case other
         case unavailable
@@ -3696,6 +7046,7 @@ private struct AppleNetworkSnapshot: Equatable {
         var description: String {
             switch self {
             case .wifi: "Wi-Fi"
+            case .ethernet: "Ethernet"
             case .cellular: "Cellular"
             case .other: "Other"
             case .unavailable: "Unavailable"
@@ -3706,6 +7057,13 @@ private struct AppleNetworkSnapshot: Equatable {
     let wifiName: String?
     let internetRoute: InternetRoute
     let checkedAt: Date
+    var localRoute: InternetRoute = .unavailable
+    var localAddress: String?
+    var localIPv4Address: String? {
+        guard let localAddress, !localAddress.contains(":") else { return nil }
+        return localAddress
+    }
+    var hasChecked = false
 
     static let unknown = AppleNetworkSnapshot(
         wifiName: nil,
@@ -3713,71 +7071,158 @@ private struct AppleNetworkSnapshot: Equatable {
         checkedAt: Date()
     )
 
-    var appleNetworkDescription: String {
-        if let wifiName {
+    var compactConnectionDetail: LocalizedStringResource {
+        guard hasChecked else { return "Checking network…" }
+        if localRoute == .wifi, let wifiName, !wifiName.isEmpty {
             return "Wi-Fi: \(wifiName)"
         }
-        if internetRoute == .wifi {
-            return "Wi-Fi connected · Name unavailable"
+        if let localAddress { return "This Device IP: \(localAddress)" }
+        switch localRoute {
+        case .wifi: return "Wi-Fi · This Device IP: Unavailable"
+        case .ethernet: return "Ethernet · This Device IP: Unavailable"
+        case .cellular: return "Cellular"
+        case .other: return "Other connection"
+        case .unavailable: return "No local connection"
         }
-        return "Wi-Fi network not identified"
+    }
+
+    var connectionDetail: LocalizedStringResource {
+        guard hasChecked else { return "Checking this device’s network…" }
+        switch localRoute {
+        case .wifi:
+            if let wifiName, let localAddress {
+                return "Wi-Fi: \(wifiName) · This Device IP: \(localAddress)"
+            }
+            if let localAddress {
+                return "Wi-Fi: Name unavailable · This Device IP: \(localAddress)"
+            }
+            return "Wi-Fi · This Device IP: Unavailable"
+        case .ethernet:
+            if let localAddress { return "Ethernet · This Device IP: \(localAddress)" }
+            return "Ethernet · This Device IP: Unavailable"
+        case .cellular:
+            return "Cellular · No Wi-Fi or Ethernet address found"
+        case .other:
+            return "Other connection · Local network not identified"
+        case .unavailable:
+            return "No Wi-Fi or Ethernet address found"
+        }
+    }
+
+    var appleNetworkDescription: String {
+        String(localized: connectionDetail)
     }
 
     static func capture() async -> AppleNetworkSnapshot {
-        async let wifiName = currentWiFiName()
-        async let internetRoute = CurrentInternetRouteProbe().route()
-        return await AppleNetworkSnapshot(
+        for await path in CurrentInternetRouteProbe.updates() {
+            return await capture(path: path)
+        }
+        return .unknown
+    }
+
+    static func capture(path: Network.NWPath, includesWiFiName: Bool = true) async -> AppleNetworkSnapshot {
+        let route: InternetRoute
+        if path.status != .satisfied {
+            route = .unavailable
+        } else if path.usesInterfaceType(.wiredEthernet) {
+            route = .ethernet
+        } else if path.usesInterfaceType(.wifi) {
+            route = .wifi
+        } else if path.usesInterfaceType(.cellular) {
+            route = .cellular
+        } else {
+            route = .other
+        }
+
+        // A cellular default route can coexist with a usable local Wi-Fi link.
+        // Identify a physical LAN interface with an assigned address, rather
+        // than presenting a VPN or cellular address as the Beakr LAN address.
+        let interfaces = path.availableInterfaces.sorted {
+            let lhsUsed = path.usesInterfaceType($0.type)
+            let rhsUsed = path.usesInterfaceType($1.type)
+            if lhsUsed != rhsUsed { return lhsUsed }
+            return $0.name < $1.name
+        }
+        let localInterface = interfaces.first { interface in
+            (interface.type == .wifi || interface.type == .wiredEthernet)
+                && address(for: interface.name) != nil
+        }
+        let localRoute: InternetRoute
+        if let localInterface {
+            localRoute = localInterface.type == .wifi ? .wifi : .ethernet
+        } else {
+            localRoute = route
+        }
+        let wifiName = includesWiFiName && localRoute == .wifi ? await currentWiFiName() : nil
+        return AppleNetworkSnapshot(
             wifiName: wifiName,
-            internetRoute: internetRoute,
-            checkedAt: Date()
+            internetRoute: route,
+            checkedAt: Date(),
+            localRoute: localRoute,
+            localAddress: localInterface.flatMap { address(for: $0.name) },
+            hasChecked: true
         )
     }
 
+    private static func address(for interfaceName: String) -> String? {
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0, let first = interfaces else { return nil }
+        defer { freeifaddrs(first) }
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        var ipv6Address: String?
+        while let current = cursor {
+            let interface = current.pointee
+            cursor = interface.ifa_next
+            guard String(cString: interface.ifa_name) == interfaceName,
+                  interface.ifa_flags & UInt32(IFF_UP) != 0,
+                  interface.ifa_flags & UInt32(IFF_RUNNING) != 0,
+                  let address = interface.ifa_addr else { continue }
+            let family = Int32(address.pointee.sa_family)
+            guard family == AF_INET || family == AF_INET6 else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(
+                address, socklen_t(address.pointee.sa_len),
+                &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST
+            ) == 0 else { continue }
+            let value = String(decoding: host.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            if family == AF_INET, value != "0.0.0.0" { return value }
+            if family == AF_INET6, value != "::" { ipv6Address = ipv6Address ?? value }
+        }
+        return ipv6Address
+    }
+
     private static func currentWiFiName() async -> String? {
-        await withCheckedContinuation { continuation in
-            NEHotspotNetwork.fetchCurrent { network in
-                continuation.resume(returning: network?.ssid)
+        #if os(iOS)
+        await WiFiNameAccess.shared.currentName()
+        #else
+        nil
+        #endif
+    }
+}
+
+nonisolated enum CurrentInternetRouteProbe {
+    static func updates() -> AsyncStream<Network.NWPath> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let monitor = NWPathMonitor()
+            monitor.pathUpdateHandler = { path in
+                continuation.yield(path)
             }
+            continuation.onTermination = { _ in monitor.cancel() }
+            monitor.start(queue: DispatchQueue(label: "net.beakr.network-details"))
         }
     }
 }
 
-private final class CurrentInternetRouteProbe: @unchecked Sendable {
-    func route() async -> AppleNetworkSnapshot.InternetRoute {
-        let monitor = NWPathMonitor()
-        let queue = DispatchQueue(label: "net.beakr.internet-route-probe")
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                monitor.pathUpdateHandler = { path in
-                    let route: AppleNetworkSnapshot.InternetRoute
-                    if path.status != .satisfied {
-                        route = .unavailable
-                    } else if path.usesInterfaceType(.wifi) {
-                        route = .wifi
-                    } else if path.usesInterfaceType(.cellular) {
-                        route = .cellular
-                    } else {
-                        route = .other
-                    }
-                    monitor.cancel()
-                    continuation.resume(returning: route)
-                }
-                monitor.start(queue: queue)
-            }
-        } onCancel: {
-            monitor.cancel()
-        }
-    }
-}
-
+#if os(iOS)
 private extension ActiveNetworkConnectivity {
     var peekDescription: String {
         switch self {
         case .inactive: "Inactive"
         case .reconnecting: "Checking Local Network"
         case .discoveringPeers: "Discovering devices"
-        case .readyNoPeers: "No devices online"
-        case .connected(let peerCount): peerCount == 1 ? "Connected to 1 device" : "Connected to \(peerCount) devices"
+        case .readyNoPeers: "1 Device Online"
+        case .connected(let peerCount): "\(peerCount + 1) Devices Online"
+        case .localNetworkDenied: "Local Network Permission Required"
         case .failed: "Unavailable"
         }
     }
@@ -3836,7 +7281,7 @@ private struct IOSMessageComposerView: View {
                     send: {
                         Task {
                             await model.send()
-                            dismiss()
+                            if model.messageText.isEmpty { dismiss() }
                         }
                     }
                 )
@@ -3851,18 +7296,38 @@ private struct IOSMessageComposerView: View {
     }
 }
 
+private struct InvitationReviewPresentation: Identifiable {
+    let id = UUID()
+    let review: InvitationReview
+    let repairProfileID: NetworkProfileID?
+}
+
 private struct IOSBeakrManagementView: View {
     let model: MessageComposerModel
     @Bindable var bootstrap: NodeBootstrapModel
+    let initialNetworkID: NetworkProfileID?
+    let joinCompleted: () -> Void
     let dismiss: () -> Void
+    var scannerReturnRoute: InvitationScannerReturnRoute? = nil
+    @State private var restoredScannerRoute = false
+    @State private var returnToRootAfterReview = false
     @State private var showingInvitationScanner = false
     @State private var pendingScannedInvitation: String?
-    @State private var invitationReview: InvitationReview?
+    @State private var invitationPresentation: InvitationReviewPresentation?
     @State private var repairTargetNetworkID: NetworkID?
+    @State private var repairTargetProfileID: NetworkProfileID?
 
     var body: some View {
         NavigationStack {
-            List {
+            if let initialNetworkID {
+                IOSNetworkDetailView(
+                    bootstrap: bootstrap,
+                    networkID: initialNetworkID,
+                    scanRepairInvitation: scanRepairInvitation,
+                    pasteRepairInvitation: pasteRepairInvitation
+                )
+            } else {
+                List {
                 Section {
                     NavigationLink {
                         IOSNetworkManagerView(
@@ -3873,8 +7338,8 @@ private struct IOSBeakrManagementView: View {
                             pasteRepairInvitation: pasteRepairInvitation
                         )
                     } label: {
-                        Label("Networks", systemImage: "network")
-                            .badge(bootstrap.networks.count)
+                        Label("Networks", systemImage: "network.badge.shield.half.filled")
+                            .badge(bootstrap.networkSessions.filter(\.isDisplayable).count)
                     }
 
                     NavigationLink {
@@ -3882,7 +7347,14 @@ private struct IOSBeakrManagementView: View {
                     } label: {
                         Label("This Device", systemImage: "iphone")
                     }
+                    NavigationLink {
+                        MessagingServicesView(bootstrap: bootstrap)
+                    } label: {
+                        Label("Services", systemImage: "square.stack.3d.up")
+                    }
                 }
+
+                WiFiNamePermissionSection()
 
                 Section {
                     NavigationLink {
@@ -3899,47 +7371,85 @@ private struct IOSBeakrManagementView: View {
                         Label("Contacts", systemImage: "person.2")
                     }
                 }
-            }
-            .navigationTitle("Beakr Settings")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", action: dismiss)
                 }
+                .navigationTitle("Settings")
             }
-            .sheet(isPresented: $showingInvitationScanner, onDismiss: presentScannedInvitationReview) {
-                InvitationScannerSheet { invitation in
-                    pendingScannedInvitation = invitation
-                    showingInvitationScanner = false
+        }
+        .task {
+            guard !restoredScannerRoute, let route = scannerReturnRoute else { return }
+            restoredScannerRoute = true
+            repairTargetProfileID = route.repairProfileID.map { NetworkProfileID(rawValue: $0) }
+            repairTargetNetworkID = route.repairNetworkID.map { NetworkID(rawValue: $0) }
+            showingInvitationScanner = true
+        }
+        .sheet(isPresented: $showingInvitationScanner, onDismiss: {
+            InvitationScannerReturnRoute.clear()
+            presentScannedInvitationReview()
+        }) {
+            InvitationScannerSheet(
+                initialNetworkID: initialNetworkID?.rawValue,
+                repairProfileID: repairTargetProfileID?.rawValue,
+                repairNetworkID: repairTargetNetworkID?.rawValue
+            ) { invitation in
+                InvitationScannerReturnRoute.clear()
+                pendingScannedInvitation = invitation
+                showingInvitationScanner = false
+            }
+        }
+        .sheet(item: $invitationPresentation, onDismiss: {
+            // Finish dismissing the review before dismissing its Settings presenter.
+            guard returnToRootAfterReview else { return }
+            returnToRootAfterReview = false
+            joinCompleted()
+        }) { presentation in
+            InvitationReviewSheet(
+                bootstrap: bootstrap,
+                review: presentation.review,
+                repairProfileID: presentation.repairProfileID,
+                joinCompleted: {
+                    returnToRootAfterReview = true
+                    invitationPresentation = nil
+                    repairTargetNetworkID = nil
+                    repairTargetProfileID = nil
+                },
+                dismiss: {
+                    bootstrap.traceInvitationUI(
+                        "presentation-dismiss-request invitation=\(presentation.review.id) repairProfile=\(presentation.repairProfileID?.rawValue.uuidString ?? "none")"
+                    )
+                    invitationPresentation = nil
+                    repairTargetNetworkID = nil
+                    repairTargetProfileID = nil
                 }
-            }
-            .sheet(item: $invitationReview) { review in
-                InvitationReviewSheet(
-                    bootstrap: bootstrap,
-                    review: review,
-                    dismiss: { invitationReview = nil }
-                )
-            }
+            )
+            .id(presentation.id)
+            .presentationDragIndicator(.visible)
         }
     }
 
     private func scanInvitation() {
         repairTargetNetworkID = nil
+        repairTargetProfileID = nil
         showingInvitationScanner = true
     }
 
-    private func scanRepairInvitation(_ networkID: NetworkID) {
-        repairTargetNetworkID = networkID
+    private func scanRepairInvitation(_ profileID: NetworkProfileID) {
+        guard let network = bootstrap.networks.first(where: { $0.id == profileID }) else { return }
+        repairTargetNetworkID = network.networkID
+        repairTargetProfileID = profileID
         bootstrap.prepareForNetworkJoin()
         showingInvitationScanner = true
     }
 
-    private func pasteRepairInvitation(_ networkID: NetworkID) {
-        repairTargetNetworkID = networkID
+    private func pasteRepairInvitation(_ profileID: NetworkProfileID) {
+        guard let network = bootstrap.networks.first(where: { $0.id == profileID }) else { return }
+        repairTargetNetworkID = network.networkID
+        repairTargetProfileID = profileID
         bootstrap.prepareForNetworkJoin()
         guard let invitation = UIPasteboard.general.string?
             .trimmingCharacters(in: .whitespacesAndNewlines),
               !invitation.isEmpty else {
             repairTargetNetworkID = nil
+            repairTargetProfileID = nil
             bootstrap.networkJoinAlert = NetworkJoinAlert(
                 succeeded: false,
                 title: "No Invitation Found",
@@ -3959,11 +7469,13 @@ private struct IOSBeakrManagementView: View {
     private func presentInvitationReview(_ invitation: String) {
         guard let review = bootstrap.invitationReview(for: invitation) else {
             repairTargetNetworkID = nil
+            repairTargetProfileID = nil
             return
         }
         if let repairTargetNetworkID,
            review.networkID != repairTargetNetworkID {
             self.repairTargetNetworkID = nil
+            repairTargetProfileID = nil
             bootstrap.networkJoinAlert = NetworkJoinAlert(
                 succeeded: false,
                 title: "Invitation Is for Another Network",
@@ -3971,8 +7483,31 @@ private struct IOSBeakrManagementView: View {
             )
             return
         }
-        repairTargetNetworkID = nil
-        invitationReview = review
+        if repairTargetNetworkID == nil,
+           let existingNetwork = bootstrap.networks.first(where: { $0.networkID == review.networkID }) {
+            if existingNetwork.canExchangeMessages {
+                bootstrap.joinInvitationJSON = ""
+                bootstrap.networkJoinAlert = NetworkJoinAlert(
+                    succeeded: false,
+                    title: existingNetwork.displayName,
+                    message: "This iPhone already has a membership credential for the \(existingNetwork.displayName) network. No network changes will be made."
+                )
+                return
+            }
+            // An incomplete enrollment also has a saved profile. Route its fresh
+            // invitation through repair instead of treating it as admitted membership.
+            repairTargetNetworkID = existingNetwork.networkID
+            repairTargetProfileID = existingNetwork.id
+        }
+        bootstrap.networkJoinAlert = nil
+        let presentation = InvitationReviewPresentation(
+            review: review,
+            repairProfileID: repairTargetProfileID
+        )
+        bootstrap.traceInvitationUI(
+            "presentation-set invitation=\(review.id) presentation=\(presentation.id) repairProfile=\(presentation.repairProfileID?.rawValue.uuidString ?? "none")"
+        )
+        invitationPresentation = presentation
     }
 }
 
@@ -3980,41 +7515,61 @@ private struct IOSNetworkManagerView: View {
     @Bindable var bootstrap: NodeBootstrapModel
     let scanInvitation: () -> Void
     let reviewInvitation: (String) -> Void
-    let scanRepairInvitation: (NetworkID) -> Void
-    let pasteRepairInvitation: (NetworkID) -> Void
+    let scanRepairInvitation: (NetworkProfileID) -> Void
+    let pasteRepairInvitation: (NetworkProfileID) -> Void
+
+    private var networkSessions: [NetworkSession] {
+        bootstrap.networkSessions.filter(\.isDisplayable)
+    }
 
     var body: some View {
         List {
             Section {
-                if bootstrap.networks.isEmpty {
+                if networkSessions.isEmpty {
                     ContentUnavailableView(
                         "No Networks",
                         systemImage: "network.slash",
-                        description: Text("Scan an invitation or enter one to join a network.")
+                        description: Text("An invitation is required to join a network.")
                     )
                 } else {
-                    ForEach(bootstrap.networks) { network in
+                    ForEach(networkSessions) { session in
                     NavigationLink {
                         IOSNetworkDetailView(
                             bootstrap: bootstrap,
-                            networkID: network.id,
+                            networkID: session.id,
                             scanRepairInvitation: scanRepairInvitation,
                             pasteRepairInvitation: pasteRepairInvitation
                         )
                     } label: {
                         HStack {
-                            Image(systemName: network.canManageNetwork ? "network.badge.shield.half.filled" : "network")
-                                .foregroundStyle(network.isActive ? Color.accentColor : .secondary)
+                            Image(systemName: session.isSelected
+                                  ? "network.badge.shield.half.filled"
+                                  : "network.slash")
+                                .foregroundStyle(
+                                    session.isSelected
+                                        ? session.connectivity.statusColor
+                                        : Color.secondary
+                                )
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(network.displayName)
-                                Text(network.isActive ? bootstrap.activeNetworkStatusTitle : "Inactive")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                Text(session.summary.displayName)
+                                Text(
+                                    bootstrap.hasPendingJoiningRequest && session.isSelected
+                                        ? (bootstrap.state == .failed ? "Join Needs Attention" : "Joining…")
+                                        : session.statusTitle
+                                )
+                                .font(.caption)
+                                .foregroundStyle(
+                                    bootstrap.hasPendingJoiningRequest && session.isSelected
+                                        ? Color.orange
+                                        : (session.isSelected
+                                            ? session.connectivity.statusColor
+                                            : Color.secondary)
+                                )
                             }
                             Spacer()
-                            if network.isActive {
+                            if session.isSelected {
                                 Image(systemName: "circle.fill")
-                                    .foregroundStyle(bootstrap.activeNetworkConnectivity.statusColor)
+                                    .foregroundStyle(session.connectivity.statusColor)
                                     .accessibilityHidden(true)
                             }
                         }
@@ -4022,51 +7577,70 @@ private struct IOSNetworkManagerView: View {
                     }
                 }
             } footer: {
-                Text("Only one network is active for messaging at a time. Inactive networks remain saved on this device.")
+                Text("--")
             }
 
             Section {
-                Button("Scan & Join", systemImage: "qrcode.viewfinder") {
+                Button("Scan Invitation QR Code", systemImage: "qrcode.viewfinder") {
                     bootstrap.prepareForNetworkJoin()
                     scanInvitation()
                 }
                 .disabled(bootstrap.state == .joiningNetwork)
 
-                Button("Paste & Join", systemImage: "doc.on.clipboard") {
-                    pasteInvitationAndJoin()
+                HStack {
+                    Text("Paste JSON")
+                    Spacer()
+                    PasteButton(payloadType: String.self) { strings in
+                        reviewPastedInvitation(strings)
+                    }
+                    .accessibilityLabel("Paste invitation JSON")
                 }
                 .disabled(bootstrap.state == .joiningNetwork)
             } header: {
                 Text("Add Network")
             } footer: {
-                Text("Scan or paste an invitation to join or repair access to an existing Beakr'Net.")
+                Text("--")
             }
 
-            if bootstrap.state == .joiningNetwork || bootstrap.state == .failed {
+            if !networkSessions.isEmpty,
+               bootstrap.state == .joiningNetwork || bootstrap.state == .failed {
                 DeviceOperationStatusSection(
                     state: bootstrap.state,
                     statusMessage: bootstrap.statusMessage
                 )
             }
+
+            if bootstrap.hasPendingJoiningRequest {
+                Section {
+                    Button("Cancel Pending Request", systemImage: "xmark.circle", role: .destructive) {
+                        Task { await bootstrap.cancelPendingNetworkJoin() }
+                    }
+                } header: {
+                    Text(bootstrap.state == .failed ? "Join Needs Attention" : "Joining…")
+                } footer: {
+                    Text(bootstrap.statusMessage)
+                }
+            }
         }
         .navigationTitle("Networks")
-        .refreshable { await bootstrap.reconnectActiveNetwork() }
+        .refreshable { await bootstrap.refreshNetworkCredentials() }
         .networkJoinAlert(
-            $bootstrap.networkJoinAlert,
+            $bootstrap.standaloneNetworkJoinAlert,
             confirmCollision: { Task { await bootstrap.confirmCollidingNetworkJoin() } },
             confirmReattachment: { Task { await bootstrap.confirmContextReattachment() } }
         )
     }
 
-    private func pasteInvitationAndJoin() {
+    private func reviewPastedInvitation(_ strings: [String]) {
+        guard bootstrap.state != .joiningNetwork else { return }
         bootstrap.prepareForNetworkJoin()
-        guard let pastedInvitation = UIPasteboard.general.string?
+        guard let pastedInvitation = strings.first?
             .trimmingCharacters(in: .whitespacesAndNewlines),
-            !pastedInvitation.isEmpty else {
+              !pastedInvitation.isEmpty else {
             bootstrap.networkJoinAlert = NetworkJoinAlert(
                 succeeded: false,
                 title: "No Invitation Found",
-                message: "Copy a Beakr invitation, then choose Paste & Join again."
+                message: "Copy a Beakr invitation JSON document, then tap Paste."
             )
             return
         }
@@ -4078,54 +7652,91 @@ private struct IOSNetworkManagerView: View {
 private struct InvitationReviewSheet: View {
     @Bindable var bootstrap: NodeBootstrapModel
     let review: InvitationReview
+    let repairProfileID: NetworkProfileID?
+    let joinCompleted: () -> Void
     let dismiss: () -> Void
     @State private var isJoining = false
     @State private var result: NetworkJoinAlert?
+    @State private var traceInstanceID = UUID()
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    InvitationReviewHeader(
-                        networkName: review.networkDisplayName,
-                        authorityHost: review.authorityURL.host ?? review.authorityURL.absoluteString,
-                        isExpired: review.isExpired()
-                    )
-                    InvitationReviewTimingCard(review: review)
-                    if review.isExpired() {
-                        ExpiredInvitationRecoveryCard(
-                            review: review,
-                            deviceName: bootstrap.deviceDisplayName
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let isAwaitingApproval = bootstrap.hasPendingJoiningRequest && bootstrap.state != .failed
+            let isExpired = review.isExpired(at: context.date) && !isAwaitingApproval
+
+            NavigationStack {
+                ScrollView {
+                    VStack(spacing: 24) {
+                        InvitationReviewHeader(
+                            networkName: review.networkDisplayName,
+                            authorityHost: review.authorityURL.host ?? review.authorityURL.absoluteString,
+                            isExpired: isExpired,
+                            isAwaitingApproval: isAwaitingApproval
                         )
+                        if isExpired {
+                            ExpiredInvitationRecoveryCard(
+                                review: review,
+                                deviceName: bootstrap.deviceDisplayName
+                            )
+                        }
+                        InvitationReviewTechnicalDetails(review: review)
+                        if isJoining {
+                            InvitationJoinProgress(statusMessage: bootstrap.statusMessage)
+                        }
+                        if let result {
+                            InvitationJoinResultCard(result: result)
+                        }
                     }
-                    InvitationReviewTechnicalDetails(review: review)
-                    if isJoining {
-                        InvitationJoinProgress(statusMessage: bootstrap.statusMessage)
-                    }
-                    if let result {
-                        InvitationJoinResultCard(result: result)
-                    }
+                    .padding()
                 }
-                .padding()
+                .navigationTitle("Join Network")
+                .navigationBarTitleDisplayMode(.inline)
+                .safeAreaInset(edge: .bottom) {
+                    InvitationReviewActions(
+                        isExpired: isExpired,
+                        isJoining: isJoining,
+                        result: result,
+                        reject: reject,
+                        accept: accept,
+                        acceptCollision: acceptCollision,
+                        acceptReattachment: acceptReattachment,
+                        repairExistingNetwork: repairExistingNetwork,
+                        useExistingNetwork: useExistingNetwork,
+                        done: dismiss
+                    )
+                }
+                .interactiveDismissDisabled(isJoining)
             }
-            .navigationTitle("Beakr'Net Invitation")
-            .navigationBarTitleDisplayMode(.inline)
-            .safeAreaInset(edge: .bottom) {
-                InvitationReviewActions(
-                    isExpired: review.isExpired(),
-                    isJoining: isJoining,
-                    result: result,
-                    reject: reject,
-                    accept: accept,
-                    acceptCollision: acceptCollision,
-                    acceptReattachment: acceptReattachment,
-                    repairExistingNetwork: repairExistingNetwork,
-                    useExistingNetwork: useExistingNetwork,
-                    done: dismiss
-                )
-            }
-            .interactiveDismissDisabled(isJoining)
         }
+        .onChange(of: bootstrap.networkJoinAlert) { _, _ in
+            // Synchronous join actions consume their own result. Polling continues
+            // after those actions return, so keep the visible review up to date.
+            guard !isJoining, result?.invitationAccepted == true,
+                  let updated = bootstrap.consumeInvitationReviewResult() else { return }
+            result = updated
+        }
+        .onChange(of: result) { _, updated in
+            guard updated?.succeeded == true else { return }
+            isJoining = false
+            bootstrap.networkJoinAlert = nil
+            joinCompleted()
+        }
+        .onAppear {
+            bootstrap.isInvitationReviewPresented = true
+            bootstrap.traceInvitationUI(
+                "sheet-appear instance=\(traceInstanceID) invitation=\(review.id) repairProfile=\(repairProfileDescription)"
+            )
+        }
+        .onDisappear {
+            bootstrap.isInvitationReviewPresented = false
+            bootstrap.traceInvitationUI(
+                "sheet-disappear instance=\(traceInstanceID) invitation=\(review.id) joining=\(isJoining) hasResult=\(result != nil)"
+            )
+        }
+    }
+
+    private var repairProfileDescription: String {
+        repairProfileID?.rawValue.uuidString ?? "none"
     }
 
     private func reject() {
@@ -4134,13 +7745,32 @@ private struct InvitationReviewSheet: View {
     }
 
     private func accept() {
-        guard !isJoining else { return }
+        guard !isJoining else {
+            bootstrap.traceInvitationUI(
+                "join-tap-ignored instance=\(traceInstanceID) invitation=\(review.id) reason=already-joining"
+            )
+            return
+        }
+        bootstrap.traceInvitationUI(
+            "join-tap instance=\(traceInstanceID) invitation=\(review.id) repairProfile=\(repairProfileDescription)"
+        )
         isJoining = true
         result = nil
+        bootstrap.networkJoinAlert = nil
         Task {
-            await bootstrap.acceptInvitation(review)
-            result = bootstrap.networkJoinAlert
-            bootstrap.networkJoinAlert = nil
+            if let repairProfileID {
+                result = await bootstrap.repairExistingNetwork(
+                    using: review,
+                    profileID: repairProfileID
+                )
+            } else {
+                await bootstrap.acceptInvitation(review)
+                result = bootstrap.networkJoinAlert
+                bootstrap.networkJoinAlert = nil
+            }
+            bootstrap.traceInvitationUI(
+                "join-result instance=\(traceInstanceID) invitation=\(review.id) present=\(result != nil) accepted=\(result?.invitationAccepted == true) succeeded=\(result?.succeeded == true)"
+            )
             if result?.invitationAccepted == true,
                UIPasteboard.general.string == review.invitationJSON {
                 UIPasteboard.general.items = []
@@ -4192,9 +7822,10 @@ private struct InvitationReviewSheet: View {
         isJoining = true
         result = nil
         Task {
-            await bootstrap.repairExistingNetwork(using: review, profileID: profileID)
-            result = bootstrap.networkJoinAlert
-            bootstrap.networkJoinAlert = nil
+            result = await bootstrap.repairExistingNetwork(
+                using: review,
+                profileID: profileID
+            )
             if result?.invitationAccepted == true,
                UIPasteboard.general.string == review.invitationJSON {
                 UIPasteboard.general.items = []
@@ -4208,31 +7839,58 @@ private struct InvitationReviewHeader: View {
     let networkName: String
     let authorityHost: String
     let isExpired: Bool
+    let isAwaitingApproval: Bool
 
     var body: some View {
         VStack(spacing: 12) {
-            Image(systemName: isExpired ? "clock.badge.exclamationmark.fill" : "network.badge.shield.half.filled")
+            Image(systemName: headerSystemImage)
                 .font(.system(.largeTitle, design: .rounded, weight: .semibold))
-                .foregroundStyle(isExpired ? .red : .blue)
+                .foregroundStyle(statusColor)
                 .symbolRenderingMode(.hierarchical)
-            Text(networkName)
+            Text("Join \(networkName)?")
                 .font(.largeTitle.bold())
                 .multilineTextAlignment(.center)
-            Text(isExpired
-                 ? "This invitation has expired."
-                 : "\(authorityHost) is inviting this iPhone to join this Beakr'Net.")
+            Text(statusDescription)
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Label(isExpired ? "Expired" : "Ready for Review", systemImage: isExpired ? "xmark.circle.fill" : "checkmark.circle.fill")
+            Label(statusTitle, systemImage: statusSystemImage)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isExpired ? .red : .green)
+                .foregroundStyle(statusColor)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
-                .background((isExpired ? Color.red : Color.green).opacity(0.12), in: Capsule())
+                .background(statusColor.opacity(0.12), in: Capsule())
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
+    }
+
+    private var statusTitle: LocalizedStringResource {
+        if isAwaitingApproval { return "Awaiting Approval" }
+        return isExpired ? "Expired" : "Ready to Join"
+    }
+
+    private var statusDescription: LocalizedStringResource {
+        if isAwaitingApproval {
+            return "A network administrator must approve this iPhone before it can finish joining."
+        }
+        if isExpired { return "This invitation has expired." }
+        return "\(authorityHost) is inviting this iPhone to join this Beakr'Net."
+    }
+
+    private var headerSystemImage: String {
+        if isAwaitingApproval { return "hourglass.circle.fill" }
+        return isExpired ? "clock.badge.exclamationmark.fill" : "network.badge.shield.half.filled"
+    }
+
+    private var statusSystemImage: String {
+        if isAwaitingApproval { return "hourglass" }
+        return isExpired ? "xmark.circle.fill" : "checkmark.circle.fill"
+    }
+
+    private var statusColor: Color {
+        if isAwaitingApproval { return .orange }
+        return isExpired ? .red : .green
     }
 }
 
@@ -4431,7 +8089,11 @@ private struct InvitationReviewActions: View {
     var body: some View {
         VStack(spacing: 10) {
             if result?.succeeded == true {
-                Button("Done", action: done)
+                Button("Close", action: done)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+            } else if result?.invitationAccepted == true {
+                Button("Close", action: done)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
             } else if result?.reattachmentContextID != nil {
@@ -4456,18 +8118,19 @@ private struct InvitationReviewActions: View {
                 Button("Cancel", action: done)
                     .disabled(isJoining)
             } else if isExpired {
-                Button("Reject Expired Invitation", role: .destructive, action: reject)
+                Button("Close", action: reject)
+                    .buttonStyle(.borderedProminent)
                     .controlSize(.large)
             } else if result != nil {
-                Button("Done", action: done)
+                Button("Close", action: done)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
             } else {
-                Button("Accept Invitation", action: accept)
+                Button("Join Network", action: accept)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .disabled(isJoining)
-                Button("Reject Invitation", role: .destructive, action: reject)
+                Button("Cancel", action: reject)
                     .disabled(isJoining)
             }
         }
@@ -4477,166 +8140,383 @@ private struct InvitationReviewActions: View {
     }
 }
 
+private struct IOSRemoveNetworksView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let networks: [NetworkSummary]
+    let connectivity: ActiveNetworkConnectivity
+    let removeAndKeepData: (NetworkProfileID) async -> Void
+    let removeAndDeleteData: (NetworkProfileID) async -> Void
+    @State private var selectedNetwork: NetworkSummary?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if networks.isEmpty {
+                    ContentUnavailableView(
+                        "No Removable Networks",
+                        systemImage: "network.slash",
+                        description: Text("Authority-hosted networks must be deleted from their Network settings.")
+                    )
+                } else {
+                    Section {
+                        ForEach(networks) { network in
+                            Button(role: .destructive) {
+                                selectedNetwork = network
+                            } label: {
+                                Label(network.displayName, systemImage: "minus.circle.fill")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    } footer: {
+                        Text("Select a network to remove it from this iPhone. The network authority is not deleted.")
+                    }
+                }
+            }
+            .navigationTitle("Remove Networks")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .sheet(item: $selectedNetwork) { network in
+            IOSForgetNetworkSheet(
+                network: network,
+                connectivity: connectivity,
+                forgetAndKeepData: {
+                    Task {
+                        await removeAndKeepData(network.id)
+                        selectedNetwork = nil
+                    }
+                },
+                forgetAndDeleteData: {
+                    Task {
+                        await removeAndDeleteData(network.id)
+                        selectedNetwork = nil
+                    }
+                }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+private struct IOSForgetNetworkSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let network: NetworkSummary
+    let connectivity: ActiveNetworkConnectivity
+    let forgetAndKeepData: () -> Void
+    let forgetAndDeleteData: () -> Void
+    @State private var pendingDisposition: ForgottenNetworkDataDisposition?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Remove \(network.displayName)?")
+                            .font(.title2.bold())
+                        Text("This removes the network from this iPhone only.")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Button(
+                            "Remove and Keep Data",
+                            systemImage: "rectangle.portrait.and.arrow.right",
+                            role: .destructive
+                        ) {
+                            pendingDisposition = .keepLocalData
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                        .controlSize(.large)
+
+                        Text("Removes this network's identity and credentials, while keeping its messages on this iPhone.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+
+                        Button("Remove and Delete Data", systemImage: "trash", role: .destructive) {
+                            pendingDisposition = .deleteLocalData
+                        }
+                        .controlSize(.large)
+
+                        Text("Also permanently deletes this network's local messages and other stored data from this iPhone.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if network.isActive, connectivity == .inactive {
+                        Label {
+                            Text("This network may simply be out of range. Removing it will not restore connectivity.")
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                        }
+                        .foregroundStyle(.orange)
+                    }
+
+                    VStack(alignment: .leading, spacing: 16) {
+                        consequence(
+                            title: "Removed from This iPhone",
+                            description: "The local identity, credentials, and connection for this network are removed."
+                        )
+                        consequence(
+                            title: "A New Invitation Is Required",
+                            description: "To join again, you will need a new invitation from the network authority. The network and its authority are not deleted."
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+            }
+            .navigationTitle("Remove Network")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .confirmationDialog(
+            "Remove \(network.displayName) from This iPhone?",
+            isPresented: Binding(
+                get: { pendingDisposition != nil },
+                set: { if !$0 { pendingDisposition = nil } }
+            )
+        ) {
+            if pendingDisposition == .keepLocalData {
+                Button("Remove and Keep Data", role: .destructive) {
+                    pendingDisposition = nil
+                    forgetAndKeepData()
+                }
+            } else if pendingDisposition == .deleteLocalData {
+                Button("Remove and Delete Data", role: .destructive) {
+                    pendingDisposition = nil
+                    forgetAndDeleteData()
+                }
+            }
+            Button("Keep Network", role: .cancel) {
+                pendingDisposition = nil
+            }
+        } message: {
+            Text("A new invitation will be required to join this network again.")
+        }
+    }
+
+    private func consequence(title: LocalizedStringKey, description: LocalizedStringKey) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.headline)
+            Text(description)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 private struct IOSNetworkDetailView: View {
     @Bindable var bootstrap: NodeBootstrapModel
     let networkID: NetworkProfileID
-    let scanRepairInvitation: (NetworkID) -> Void
-    let pasteRepairInvitation: (NetworkID) -> Void
+    let scanRepairInvitation: (NetworkProfileID) -> Void
+    let pasteRepairInvitation: (NetworkProfileID) -> Void
     @State private var confirmingDeparture = false
-    @State private var choosingRepairInvitation = false
+    @State private var confirmingDeletion = false
+    @State private var isRenamingNetwork = false
     @State private var editedNetworkName = ""
     @State private var isSavingNetworkName = false
-    @State private var isRefreshingConnection = false
-    @State private var didCompleteConnectionRefresh = false
+    @State private var presentedSectionInformation: NetworkSectionInformation?
 
     private var network: NetworkSummary? {
         bootstrap.networks.first { $0.id == networkID }
     }
 
     var body: some View {
-        Form {
-            if let network {
-                Section("Beakr'Net Parameters") {
-                    LabeledContent("Network Name") {
+        ZStack {
+            Form {
+                if let network {
+                Section {
+                    LabeledContent("Name") {
                         HStack {
-                            TextField("Network Name", text: $editedNetworkName)
+                            Text(network.displayName)
                                 .multilineTextAlignment(.trailing)
-                                .submitLabel(.done)
-                                .onSubmit { saveNetworkName(network) }
-                            Button("Save") { saveNetworkName(network) }
-                                .disabled(!canSaveName(for: network) || isSavingNetworkName)
-                        }
-                    }
-                    NetworkStatusDisclosure(
-                        connectivity: network.isActive ? bootstrap.activeNetworkConnectivity : .inactive,
-                        knownDeviceCount: network.isActive ? bootstrap.networkMembers.count : 0,
-                        onlineDeviceCount: network.isActive ? bootstrap.onlineMemberIDs.count : 0
-                    )
-                    if network.isActive {
-                        Button(action: refreshConnection) {
-                            HStack(spacing: 8) {
-                                if isRefreshingConnection {
-                                    ProgressView()
-                                        .controlSize(.small)
+                            if network.isHostingAuthority {
+                                Button("Rename Network", systemImage: "pencil") {
+                                    editedNetworkName = network.displayName
+                                    isRenamingNetwork = true
                                 }
-                                Text(isRefreshingConnection ? "Refreshing Connection…" : "Refresh Connection")
+                                .labelStyle(.iconOnly)
+                                .disabled(isSavingNetworkName)
                             }
                         }
-                        .disabled(isRefreshingConnection)
-
-                        if didCompleteConnectionRefresh && !isRefreshingConnection {
-                            Label(
-                                "Refresh complete: \(bootstrap.activeNetworkConnectivity.compactStatusTitle)",
-                                systemImage: bootstrap.activeNetworkConnectivity == .failed
-                                    ? "exclamationmark.triangle.fill"
-                                    : "checkmark.circle.fill"
-                            )
-                            .font(.footnote)
-                            .foregroundStyle(bootstrap.activeNetworkConnectivity.statusColor)
-                        }
-
                     }
-                    Button("Repair Network Access…", systemImage: "wrench.and.screwdriver") {
-                        choosingRepairInvitation = true
-                    }
-                    NetworkAccessRow(canManageNetwork: network.canManageNetwork)
-                    NetworkAuthorityRow(
-                        deviceName: network.isActive ? bootstrap.activeAuthorityDeviceName : nil,
-                        endpoint: network.isActive ? bootstrap.activeAuthorityEndpoint : nil,
-                        isHostedHere: network.isHostingAuthority
-                    )
-                    LabeledContent("Services", value: network.canExchangeMessages ? "Messaging" : "Unavailable")
-                    LabeledContent("Network ID") {
+                    NetworkInformationRow("Network ID") {
                         Text(network.networkID.rawValue.uuidString)
                             .font(.caption.monospaced())
                             .textSelection(.enabled)
+                            .multilineTextAlignment(.trailing)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
                     }
-
-                    if !network.isActive {
-                        Button("Make Active", systemImage: "checkmark.circle") {
-                            Task { await bootstrap.switchNetwork(to: network.id) }
-                        }
-                        .disabled(bootstrap.state != .ready)
-                    }
+                    NetworkLastErrorDisclosure(
+                        message: bootstrap.networkSessions.first(where: { $0.id == network.id })?.lastError
+                    )
+                    NetworkCredentialDetailsView(bootstrap: bootstrap, network: network)
                 }
 
-                Section("Addressable Devices") {
+                Section {
                     NetworkAddressesContent(
                         localName: bootstrap.deviceDisplayName,
-                        localID: bootstrap.nodeID,
-                        members: network.isActive ? bootstrap.networkMembers : [],
+                        localID: bootstrap.localNodeID(for: network.id),
+                        isNetworkActive: network.isActive,
+                        localDeviceIsMember: !network.isActive || bootstrap.state == .ready,
+                        members: bootstrap.members(for: network),
                         onlineMemberIDs: network.isActive ? bootstrap.onlineMemberIDs : [],
                         isLocalDeviceOnline: network.isActive
+                            && bootstrap.activeNetworkConnectivity.isLocalDeviceOnline,
+                        authorityDeviceName: network.isActive ? bootstrap.activeAuthorityDeviceName : nil,
+                        isLocalDeviceAuthority: network.isHostingAuthority,
+                        localCanManageNetwork: network.canManageNetwork,
+                        membershipNotice: (bootstrap.savedMemberships[network.id] ?? .unavailable).notice
                     )
-                }
-
-                if network.canManageNetwork {
-                    InviteDeviceSection(
-                        invitation: network.isActive ? bootstrap.invitationJSON : "",
-                        create: { Task { await bootstrap.createInvitation() } }
-                    )
-                    .disabled(!network.isActive || !bootstrap.canCreateInvitations)
-                    if !network.isHostingAuthority {
-                        Text("This iPhone has management authorization. Remote authority operations will become available when the authority control API is enabled.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                    if network.isHostingAuthority {
+                        DisclosureGroup("Device Registration") {
+                            NavigationLink {
+                                IOSNetworkInvitationsView(
+                                    bootstrap: bootstrap,
+                                    networkID: network.id
+                                )
+                            } label: {
+                                Label("Invitation", systemImage: "qrcode")
+                            }
+                            .accessibilityIdentifier("networkInvitationsButton")
+                        }
                     }
-                } else {
-                    Section("Invitations") {
-                        ContentUnavailableView(
-                            "Invitations Managed by the Authority",
-                            systemImage: "qrcode",
-                            description: Text("This iPhone is a network member. Invitations must be created by a device holding the network authority.")
+                } header: {
+                    HStack(spacing: 6) {
+                        Text("Devices in This Network")
+                        NetworkSectionInformationButton(
+                            information: .devices,
+                            show: { presentedSectionInformation = $0 }
                         )
                     }
                 }
 
                 Section {
-                    Button("Forget Network…", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
-                        confirmingDeparture = true
+                    if network.isActive {
+                        if bootstrap.state != .ready {
+                            Menu {
+                                Button("Scan QR Code", systemImage: "qrcode.viewfinder") {
+                                    scanRepairInvitation(network.id)
+                                }
+                                Button("Paste", systemImage: "doc.on.clipboard") {
+                                    pasteRepairInvitation(network.id)
+                                }
+                            } label: {
+                                Label("Invitation…", systemImage: "qrcode")
+                            }
+                            .accessibilityIdentifier("rejoinInvitationButton")
+                        }
+                    } else {
+                        Button("Use for Messaging", systemImage: "bubble.left.fill") {
+                            activateNetwork(network.id)
+                        }
+                        .disabled(bootstrap.state == .securing || bootstrap.state == .starting)
+                    }
+
+                    if network.isHostingAuthority {
+                        Button("Delete Network…", systemImage: "trash", role: .destructive) {
+                            confirmingDeletion = true
+                        }
+                    } else {
+                        Button(
+                            "Forget Network…",
+                            systemImage: "rectangle.portrait.and.arrow.right",
+                            role: .destructive
+                        ) {
+                            confirmingDeparture = true
+                        }
                     }
                 }
-            } else {
-                ContentUnavailableView("Network Unavailable", systemImage: "network.slash")
+
+                } else {
+                    ContentUnavailableView("Network Unavailable", systemImage: "network.slash")
+                }
             }
+            .disabled(isRenamingNetwork)
+            .accessibilityHidden(isRenamingNetwork)
+
+            if isRenamingNetwork, let network {
+                Color.black.opacity(0.35)
+                    .ignoresSafeArea()
+
+                IOSRenameNetworkDialog(
+                    name: $editedNetworkName,
+                    canSave: canSaveName(for: network),
+                    isSaving: isSavingNetworkName,
+                    cancel: { isRenamingNetwork = false },
+                    save: {
+                        isRenamingNetwork = false
+                        saveNetworkName(network)
+                    }
+                )
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: isRenamingNetwork)
+        .sheet(item: $presentedSectionInformation) { information in
+            NetworkSectionInformationView(information: information)
         }
         .navigationTitle(network?.displayName ?? "Network")
         .onAppear {
             editedNetworkName = network?.displayName ?? ""
         }
         .onChange(of: network?.displayName) { _, newName in
-            guard !isSavingNetworkName else { return }
+            guard !isSavingNetworkName, !isRenamingNetwork else { return }
             editedNetworkName = newName ?? ""
         }
-        .confirmationDialog("Forget Network on This iPhone?", isPresented: $confirmingDeparture) {
+        .sheet(isPresented: $confirmingDeparture) {
             if let network {
-                Button("Forget \(network.displayName)", role: .destructive) {
-                    Task { await bootstrap.forgetJoinedNetwork(network.id) }
+                IOSForgetNetworkSheet(
+                    network: network,
+                    connectivity: bootstrap.activeNetworkConnectivity,
+                    forgetAndKeepData: {
+                        confirmingDeparture = false
+                        Task {
+                            await bootstrap.forgetJoinedNetwork(
+                                network.id,
+                                dataDisposition: .keepLocalData
+                            )
+                        }
+                    },
+                    forgetAndDeleteData: {
+                        confirmingDeparture = false
+                        Task {
+                            await bootstrap.forgetJoinedNetwork(
+                                network.id,
+                                dataDisposition: .deleteLocalData
+                            )
+                        }
+                    }
+                )
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+            }
+        }
+        .confirmationDialog("Delete Network?", isPresented: $confirmingDeletion) {
+            if let network {
+                Button("Delete \(network.displayName)", role: .destructive) {
+                    Task { await bootstrap.deleteOwnedNetwork(network.id) }
                 }
             }
             Button("Keep Network", role: .cancel) {}
         } message: {
             if let network {
-                Text(forgetNetworkMessage(
-                    for: network,
-                    deviceName: "iPhone",
-                    connectivity: bootstrap.activeNetworkConnectivity
-                ))
+                Text("This permanently removes \(network.displayName), its management credentials, and its local data.")
             }
         }
-        .confirmationDialog("Repair Network Access?", isPresented: $choosingRepairInvitation) {
-            if let network {
-                Button("Scan Current Invitation") {
-                    scanRepairInvitation(network.networkID)
-                }
-                Button("Paste Current Invitation") {
-                    pasteRepairInvitation(network.networkID)
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("A fresh invitation from this Beakr'Net authority is required. Messages, settings, and this device's identity will be preserved.")
-        }
+
     }
 
     private func canSaveName(for network: NetworkSummary) -> Bool {
@@ -4648,49 +8528,150 @@ private struct IOSNetworkDetailView: View {
         guard canSaveName(for: network), !isSavingNetworkName else { return }
         isSavingNetworkName = true
         Task {
-            let saved = await bootstrap.renameLocalNetwork(network.id, to: editedNetworkName)
-            if saved {
-                editedNetworkName = bootstrap.networks.first(where: { $0.id == network.id })?.displayName
-                    ?? editedNetworkName.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
+            await bootstrap.renameOwnedNetwork(network.id, to: editedNetworkName)
+            editedNetworkName = bootstrap.networks.first(where: { $0.id == network.id })?.displayName
+                ?? network.displayName
             isSavingNetworkName = false
         }
     }
 
-    private func refreshConnection() {
-        guard !isRefreshingConnection else { return }
-        isRefreshingConnection = true
-        didCompleteConnectionRefresh = false
+    private func activateNetwork(_ networkID: NetworkProfileID) {
         Task {
-            await bootstrap.reconnectActiveNetwork()
+            await bootstrap.switchNetwork(to: networkID)
             guard !Task.isCancelled else { return }
-            isRefreshingConnection = false
-            didCompleteConnectionRefresh = true
         }
     }
 }
 
-private struct NetworkStatusDisclosure: View {
+private struct IOSNetworkInvitationsView: View {
+    @Bindable var bootstrap: NodeBootstrapModel
+    let networkID: NetworkProfileID
+
+    private var network: NetworkSummary? {
+        bootstrap.networks.first { $0.id == networkID }
+    }
+
+    var body: some View {
+        Form {
+            if let network, network.isHostingAuthority {
+                InviteDeviceSection(
+                    invitation: network.isActive ? bootstrap.invitationJSON : "",
+                    isConsumed: bootstrap.invitationIsConsumed(bootstrap.invitationJSON),
+                    create: { Task { await bootstrap.createInvitation(for: network.id) } }
+                )
+                .disabled(!network.isActive || !bootstrap.canCreateInvitations)
+            } else {
+                ContentUnavailableView(
+                    "Invitations Unavailable",
+                    systemImage: "qrcode",
+                    description: Text("This device is not hosting the network authority.")
+                )
+            }
+        }
+        .navigationTitle("Invitations")
+    }
+}
+
+private struct IOSRenameNetworkDialog: View {
+    @Binding var name: String
+    let canSave: Bool
+    let isSaving: Bool
+    let cancel: () -> Void
+    let save: () -> Void
+    @FocusState private var isNameFieldFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Rename Network")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            TextField("Network Name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .focused($isNameFieldFocused)
+                .submitLabel(.done)
+                .onSubmit {
+                    guard canSave, !isSaving else { return }
+                    save()
+                }
+
+            HStack(spacing: 10) {
+                Button("Cancel", action: cancel)
+                    .frame(maxWidth: .infinity)
+
+                Button("Save", action: save)
+                    .frame(maxWidth: .infinity)
+                    .disabled(!canSave || isSaving)
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(20)
+        .frame(maxWidth: 340)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(.separator)
+        }
+        .shadow(radius: 24, y: 8)
+        .padding(.horizontal, 24)
+        .accessibilityAddTraits(.isModal)
+        .onAppear { isNameFieldFocused = true }
+        .transition(.scale(scale: 0.96).combined(with: .opacity))
+    }
+}
+
+private struct MessagingConnectivityDisclosure: View {
+    let isActive: Bool
+    let requiresAttention: Bool
     let connectivity: ActiveNetworkConnectivity
     let knownDeviceCount: Int
     let onlineDeviceCount: Int
+    var credentialStatus: NetworkCredentialStatus? = nil
     @State private var isExpanded = false
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            LabeledContent("This Device", value: connectivity.localDeviceStatus)
-            LabeledContent("Other Devices Online", value: onlineDeviceCount.formatted())
-            LabeledContent(
-                "Known Devices Offline",
-                value: max(knownDeviceCount - onlineDeviceCount, 0).formatted()
-            )
-            LabeledContent("Connection", value: connectivity.connectionDescription)
+            VStack(spacing: 3) {
+                statusRow("This Device", value: connectivity.localDeviceStatus)
+                statusRow("Other Devices Online", value: onlineDeviceCount.formatted())
+                statusRow(
+                    "Known Devices Offline",
+                    value: max(knownDeviceCount - onlineDeviceCount, 0).formatted()
+                )
+            }
+            .padding(.top, 3)
         } label: {
-            LabeledContent("Status") {
-                Text(connectivity.compactStatusTitle)
-                    .foregroundStyle(connectivity.statusColor)
+            LabeledContent("Messaging Connectivity") {
+                if let credentialStatus {
+                    Text(credentialStatus.title)
+                        .foregroundStyle(credentialStatus == .preparing ? Color.secondary : Color.red)
+                } else if connectivity == .localNetworkDenied {
+                    Text("Local Network Permission Required")
+                        .foregroundStyle(.red)
+                } else if requiresAttention {
+                    Text("Setup Needs Attention")
+                        .foregroundStyle(.red)
+                } else if isActive {
+                    Text("Active")
+                        .foregroundStyle(.blue)
+                } else {
+                    Text("Not Active")
+                        .foregroundStyle(.secondary)
+                }
             }
         }
+    }
+
+    private func statusRow(_ title: LocalizedStringKey, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+            Spacer(minLength: 8)
+            Text(value)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+        .font(.subheadline)
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -4698,12 +8679,12 @@ private struct NetworkAccessRow: View {
     let canManageNetwork: Bool
 
     var body: some View {
-        LabeledContent("Access") {
+        NetworkInformationRow("Role") {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(canManageNetwork ? "Manager" : "Member")
                 Text(canManageNetwork
                      ? "Can manage membership and invitations"
-                     : "Can exchange messages")
+                     : "Can join this network")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -4715,11 +8696,18 @@ private struct NetworkAuthorityRow: View {
     let deviceName: String?
     let endpoint: String?
     let isHostedHere: Bool
+    let isActive: Bool
 
     var body: some View {
-        LabeledContent("Authority Host") {
+        NetworkInformationRow("Authority") {
             VStack(alignment: .trailing, spacing: 2) {
-                Text(deviceName ?? (isHostedHere ? "This Device" : "Another Device"))
+                Text(deviceName ?? "Remote Device")
+                    .foregroundStyle(isActive ? Color.primary : Color.secondary)
+                if isHostedHere {
+                    Text("This Device")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if let endpoint {
                     Text(endpoint)
                         .font(.caption.monospaced())
@@ -4733,53 +8721,154 @@ private struct NetworkAuthorityRow: View {
 
 private struct IOSDeviceSettingsView: View {
     @Bindable var bootstrap: NodeBootstrapModel
+    var member: IOSMemberDetailRoute? = nil
+    @State private var nameDraft = ""
+    @State private var isEditingName = false
+
+    private var displayedNetwork: NetworkSummary? {
+        if let member {
+            return bootstrap.networks.first { $0.id == member.profileID }
+        }
+        return bootstrap.networks.first(where: \.isActive)
+    }
+
+    private var displayedNodeID: UUID? {
+        if let member { return member.deviceID }
+        return bootstrap.nodeID
+    }
+
+    private var deviceRole: LocalizedStringResource {
+        guard let displayedNetwork else { return "Not Assigned" }
+        return displayedNetwork.isHostingAuthority ? "Authority" : "Member"
+    }
+
+    private var deviceStatus: LocalizedStringResource {
+        guard let displayedNetwork else { return "Ready" }
+        guard displayedNetwork.isActive else { return "Offline" }
+        return switch bootstrap.state {
+        case .starting, .creatingNetwork, .joiningNetwork, .identityReady, .securing:
+            "Connecting"
+        case .needsConfiguration:
+            "Offline"
+        case .ready:
+            "Ready"
+        case .failed:
+            "Error"
+        }
+    }
 
     var body: some View {
         Form {
             Section {
-                TextField("Friendly Name", text: $bootstrap.deviceFriendlyName)
-                    .accessibilityLabel("Device Friendly Name")
+                LabeledContent("Name") {
+                    Button {
+                        nameDraft = bootstrap.deviceDisplayName
+                        isEditingName = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            Text(bootstrap.deviceDisplayName)
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "pencil")
+                                .foregroundStyle(.blue)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Edit Friendly Name")
+                }
 
-                LabeledContent("Device ID") {
-                    if let nodeID = bootstrap.nodeID {
+                LabeledContent("Node ID") {
+                    if displayedNetwork != nil, let nodeID = displayedNodeID {
                         Text(nodeID.uuidString)
                             .font(.caption.monospaced())
                             .textSelection(.enabled)
                     } else {
-                        Text("Created after joining a network")
+                        Text("Not Assigned")
                             .foregroundStyle(.secondary)
                     }
                 }
 
-                Label(bootstrap.statusMessage, systemImage: bootstrap.state.systemImage)
-                    .foregroundStyle(bootstrap.state == .failed ? .red : .secondary)
+                LabeledContent("Role") {
+                    Text(deviceRole)
+                        .foregroundStyle(.secondary)
+                }
+
+                LabeledContent("Status") {
+                    Text(deviceStatus)
+                        .foregroundStyle(bootstrap.state == .failed && displayedNetwork != nil ? .red : .secondary)
+                }
             } header: {
                 Text("This Device")
             } footer: {
-                Text("The friendly name is stored on this iPhone. The device ID uniquely identifies this device on the active Beakr network.")
+                Text("The friendly name is stored on this iPhone. Node IDs and roles are network-specific.")
             }
 
-            if bootstrap.state == .identityReady || bootstrap.state == .enrolling {
+            Section("Periodic Status") {
+                Toggle("Allow This Device to Monitor My Status", isOn: .constant(false))
+                    .disabled(true)
+                Button("Start Monitoring This Device") {}
+                    .disabled(true)
+                Text("Monitoring applies to other devices.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Saved Network Memberships") {
+                ForEach(bootstrap.networkSessions) { session in
+                    VStack(alignment: .leading, spacing: 4) {
+                        LabeledContent(session.summary.displayName) {
+                            Text(session.isSelected ? "Used for messaging" : "Not selected for messaging")
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(session.profile.localNodeID.rawValue.uuidString)
+                            .font(.caption.monospaced()).textSelection(.enabled)
+                        if !session.isSelected {
+                            Text((bootstrap.savedMemberships[session.id] ?? .unavailable).notice)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            if !bootstrap.archivedContexts.isEmpty {
+                Section("Preserved Contexts") {
+                    ForEach(bootstrap.archivedContexts) { context in
+                        Text(context.displayName)
+                    }
+                    Text("Preserved history does not establish current membership.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            if displayedNetwork?.isActive == true,
+               (bootstrap.state == .identityReady || bootstrap.state == .securing) {
                 TrustRecoverySection(
-                    isWorking: bootstrap.state == .enrolling,
-                    enroll: { Task { await bootstrap.enrollAndRecoverTrust() } }
+                    isWorking: bootstrap.state == .securing,
+                    enroll: { Task { await bootstrap.refreshNetworkCredentials() } }
                 )
             }
 
-            Section {
-                Picker("Authority Hosting", selection: .constant(false)) {
-                    Text("Off — Join Networks Only").tag(false)
-                    Text("On — Host on This iPhone (Coming Later)").tag(true)
-                }
-                .disabled(true)
-                .accessibilityValue("Off, join networks only")
-            } header: {
-                Text("Advanced")
-            } footer: {
-                Text("iPhone authority hosting is planned but not available yet. This iPhone can currently join or repair access to an existing Beakr'Net.")
-            }
         }
         .navigationTitle("This Device")
+        .alert("Edit Name", isPresented: $isEditingName) {
+            TextField("Name", text: $nameDraft)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                saveFriendlyName()
+            }
+            .disabled(nameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("This name identifies the device in Beakr networks.")
+        }
+        .onAppear {
+            if bootstrap.deviceFriendlyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                bootstrap.deviceFriendlyName = bootstrap.deviceDisplayName
+            }
+        }
+    }
+
+    private func saveFriendlyName() {
+        bootstrap.deviceFriendlyName = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task { await bootstrap.applyDeviceFriendlyName() }
     }
 }
 
@@ -4809,7 +8898,7 @@ private struct IncomingMessagesSection: View {
             if messages.isEmpty {
                 ContentUnavailableView(
                     "No Messages",
-                    systemImage: "tray",
+                    systemImage: "tray.and.arrow.down",
                     description: Text("Messages received by this device will appear here.")
                 )
             } else {
@@ -4917,24 +9006,26 @@ private struct DeviceOverviewSection: View {
 
 #if os(macOS)
 private struct DeviceDetailsSection: View {
-    @Binding var friendlyName: String
+    let displayedName: String
+    @State private var nameDraft = ""
     let nodeID: UUID?
     let state: NodeBootstrapState
     let statusMessage: String
-    let applyFriendlyName: () -> Void
+    let applyFriendlyName: (String) -> Void
 
     var body: some View {
         Section {
-            TextField("Friendly Name", text: $friendlyName)
+            TextField("Friendly Name", text: $nameDraft)
+                .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Device Friendly Name")
-                .onSubmit(applyFriendlyName)
+                .onSubmit { applyFriendlyName(nameDraft) }
 
             Button("Apply Friendly Name", systemImage: "checkmark") {
-                applyFriendlyName()
+                applyFriendlyName(nameDraft)
             }
-            .disabled(friendlyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(nameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-            LabeledContent("Device ID") {
+            LabeledContent("Node ID") {
                 if let nodeID {
                     Text(nodeID.uuidString)
                         .font(.body.monospaced())
@@ -4950,8 +9041,9 @@ private struct DeviceDetailsSection: View {
         } header: {
             Text("This Device")
         } footer: {
-            Text("The friendly name is stored on this Mac. The device ID uniquely identifies this device on the active Beakr network.")
+            Text("The friendly name is stored on this Mac. Node IDs are network-specific.")
         }
+        .onAppear { nameDraft = displayedName }
     }
 }
 #endif
@@ -4969,7 +9061,7 @@ private extension NodeBootstrapState {
             "person.badge.key.fill"
         case .identityReady:
             "checkmark.shield"
-        case .enrolling:
+        case .securing:
             "arrow.trianglehead.2.clockwise.rotate.90"
         case .ready:
             "checkmark.shield.fill"
@@ -4981,6 +9073,7 @@ private extension NodeBootstrapState {
 
 private struct InviteDeviceSection: View {
     let invitation: String
+    let isConsumed: Bool
     let create: () -> Void
 
     var body: some View {
@@ -4991,24 +9084,24 @@ private struct InviteDeviceSection: View {
                 Button("Re-Generate QR Code", systemImage: "arrow.clockwise", action: create)
             }
 
-            if !invitation.isEmpty {
+            if isConsumed {
+                UsedInvitationNotice()
+            } else if !invitation.isEmpty {
                 InvitationQRCodeView(invitation: invitation)
                     .frame(width: 320)
                     .frame(minHeight: 390)
-
-                InvitationShareLink(invitation: invitation) {
-                    Label("Share Invitation", systemImage: "square.and.arrow.up")
-                }
 
                 Text(invitation)
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
                     .accessibilityLabel("Device Invitation JSON")
+
+                InvitationShareLink(invitation: invitation) {
+                    Label("Share JSON Invitation", systemImage: "square.and.arrow.up")
+                }
             }
         } header: {
             Text("Network Invitation")
-        } footer: {
-            Text("The invitation expires after 10 minutes and can be used once. It contains public trust material only.")
         }
     }
 }
@@ -5016,33 +9109,100 @@ private struct InviteDeviceSection: View {
 private struct NetworkAddressesContent: View {
     let localName: String
     let localID: UUID?
+    let isNetworkActive: Bool
+    let localDeviceIsMember: Bool
     let members: [NetworkMemberSummary]
     let onlineMemberIDs: Set<UUID>
     let isLocalDeviceOnline: Bool
+    let authorityDeviceName: String?
+    let isLocalDeviceAuthority: Bool
+    let localCanManageNetwork: Bool
+    var membershipNotice: LocalizedStringResource = "Saved membership · UnObserved"
+    var isStarting = false
+
+    private var authorityMemberID: UUID? {
+        guard !isLocalDeviceAuthority, let authorityDeviceName else { return nil }
+        return members.first {
+            $0.displayName.localizedCaseInsensitiveCompare(authorityDeviceName) == .orderedSame
+        }?.id
+    }
+
+    private var otherMembers: [NetworkMemberSummary] {
+        orderedNetworkMembers(
+            members.filter { $0.id != authorityMemberID },
+            onlineMemberIDs: onlineMemberIDs
+        )
+    }
+
+    private var rowSpacing: CGFloat {
+#if os(iOS)
+        8
+#else
+        14
+#endif
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            NetworkAddressRow(
-                displayName: localName,
-                deviceID: localID,
-                detail: "This Device",
-                isOnline: isLocalDeviceOnline
-            )
-
-            ForEach(members) { member in
+        VStack(alignment: .leading, spacing: rowSpacing) {
+            if !isNetworkActive {
+                Text(membershipNotice).font(.caption).foregroundStyle(.secondary)
+            }
+            if let authorityMember = members.first(where: { $0.id == authorityMemberID }) {
                 NetworkAddressRow(
-                    displayName: member.displayName,
-                    deviceID: member.id,
-                    detail: nil,
-                    isOnline: onlineMemberIDs.contains(member.id)
+                    displayName: authorityMember.displayName,
+                    deviceID: authorityMember.id,
+                    detail: "Member · Network Authority",
+                    isOnline: onlineMemberIDs.contains(authorityMember.id),
+                    isNetworkActive: isNetworkActive
                 )
             }
 
-            if members.isEmpty {
-                Text("No other addressable devices have been discovered on the active network.")
-                    .foregroundStyle(.secondary)
+            NetworkAddressRow(
+                displayName: localName,
+                deviceID: localID,
+                detail: localDeviceDetail,
+                isOnline: isLocalDeviceOnline,
+                isNetworkActive: isNetworkActive,
+                requiresAttention: !localDeviceIsMember && !isStarting
+            )
+
+            ForEach(otherMembers) { member in
+                NetworkAddressRow(
+                    displayName: member.displayName,
+                    deviceID: member.id,
+                    detail: "Member",
+                    isOnline: onlineMemberIDs.contains(member.id),
+                    isNetworkActive: isNetworkActive
+                )
             }
         }
+    }
+
+    private var localDeviceDetail: LocalizedStringResource {
+        if isStarting { return "Connecting… · This Device" }
+        if !localDeviceIsMember { return "Setup Needs Attention · This Device" }
+        if isLocalDeviceAuthority { return "Member · Network Authority · This Device" }
+        if localCanManageNetwork { return "Member · Manager · This Device" }
+        return "Member · This Device"
+    }
+}
+
+private func orderedNetworkMembers(
+    _ members: [NetworkMemberSummary],
+    onlineMemberIDs: Set<UUID>
+) -> [NetworkMemberSummary] {
+    members.sorted { lhs, rhs in
+        let lhsIsOnline = onlineMemberIDs.contains(lhs.id)
+        let rhsIsOnline = onlineMemberIDs.contains(rhs.id)
+        if lhsIsOnline != rhsIsOnline {
+            return lhsIsOnline
+        }
+
+        let nameOrder = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+        if nameOrder != .orderedSame {
+            return nameOrder == .orderedAscending
+        }
+        return lhs.id.uuidString < rhs.id.uuidString
     }
 }
 
@@ -5051,36 +9211,53 @@ private struct NetworkAddressRow: View {
     let deviceID: UUID?
     let detail: LocalizedStringResource?
     let isOnline: Bool
+    let isNetworkActive: Bool
+    var requiresAttention = false
+
+    private var detailSpacing: CGFloat {
+#if os(iOS)
+        2
+#else
+        4
+#endif
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Circle()
-                .fill(isOnline ? Color.green : Color.secondary.opacity(0.45))
-                .frame(width: 10, height: 10)
-                .padding(.top, 5)
-                .accessibilityLabel(isOnline ? "Online" : "Offline")
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(displayName)
-                    .font(.headline)
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: detailSpacing) {
                 if let detail {
                     Text(detail)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(requiresAttention ? Color.red : Color.secondary)
+                }
+                if !isNetworkActive {
+                    Text("UnObserved").font(.caption).foregroundStyle(.secondary)
                 }
                 if let deviceID {
-                    Text(deviceID.uuidString)
-                        .font(.caption.monospaced())
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
+                    LabeledContent("Device ID") {
+                        Text(deviceID.uuidString)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .multilineTextAlignment(.trailing)
+                    }
                 } else {
                     Text("Address is created during network setup")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
+            .padding(.vertical, 4)
+        } label: {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(requiresAttention ? Color.red : (isOnline ? Color.green : Color.secondary.opacity(0.45)))
+                    .frame(width: 10, height: 10)
+                    .accessibilityLabel(requiresAttention ? "Needs attention" : (!isNetworkActive ? "UnObserved" : (isOnline ? "Online" : "Offline")))
+                Text(displayName)
+                    .font(.headline)
+                    .foregroundStyle(requiresAttention ? Color.red : Color.primary)
+            }
         }
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -5101,11 +9278,11 @@ private struct TrustRecoverySection: View {
     let enroll: () -> Void
 
     var body: some View {
-        Section("Device Setup") {
-            Button("Retry Device Setup", systemImage: "arrow.clockwise", action: enroll)
+        Section("Network Credentials") {
+            Button("Refresh Network Credentials", systemImage: "arrow.clockwise", action: enroll)
                 .disabled(isWorking)
             if isWorking {
-                ProgressView("Securing this device")
+                ProgressView("Updating Network Credentials…")
             }
         }
     }
@@ -5206,9 +9383,27 @@ private struct MessageComposerSection: View {
                     .foregroundStyle(.secondary)
             }
 
-            TextField("Message", text: $messageText, axis: .vertical)
-                .lineLimit(3...8)
-                .accessibilityLabel("Message")
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Message")
+#if os(macOS)
+                MacMessageTextEditor(text: $messageText)
+                    .frame(maxWidth: .infinity, minHeight: 96, maxHeight: 200)
+                    .accessibilityLabel("Message")
+#else
+                TextEditor(text: $messageText)
+                    .multilineTextAlignment(.leading)
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+                    .background(.background, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(.separator)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 72, maxHeight: 160, alignment: .leading)
+                    .accessibilityLabel("Message")
+#endif
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Button("Send", systemImage: "paperplane", action: send)
                 .disabled(!canSend)
@@ -5240,6 +9435,66 @@ private struct MessageComposerSection: View {
     }
 }
 
+#if os(macOS)
+private struct MacMessageTextEditor: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.borderType = .bezelBorder
+        scrollView.drawsBackground = true
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+
+        let textView = NSTextView()
+        textView.delegate = context.coordinator
+        textView.string = text
+        textView.font = .preferredFont(forTextStyle: .body)
+        textView.isRichText = false
+        textView.isAutomaticSpellingCorrectionEnabled = true
+        textView.isAutomaticTextCompletionEnabled = true
+        textView.allowsUndo = true
+        textView.alignment = .natural
+        textView.baseWritingDirection = .natural
+        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(
+            width: 0,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+
+        scrollView.documentView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView,
+              textView.string != text else { return }
+        textView.string = text
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        private var text: Binding<String>
+
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            text.wrappedValue = textView.string
+        }
+    }
+}
+#endif
+
 private struct OutgoingMessagesSection: View {
     let messages: [OutgoingMessage]
     let recipientName: (UUID) -> String
@@ -5251,7 +9506,7 @@ private struct OutgoingMessagesSection: View {
             if messages.isEmpty {
                 ContentUnavailableView(
                     "No Messages",
-                    systemImage: "tray",
+                    systemImage: "tray.and.arrow.up",
                     description: Text("Messages queued on this device will appear here.")
                 )
             } else {

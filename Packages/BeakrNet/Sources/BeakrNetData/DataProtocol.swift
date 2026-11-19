@@ -261,6 +261,8 @@ public actor DataDispatcher {
     private let eventSink: EventSink
     private var seenOrder: [MessageID] = []
     private var seen: Set<MessageID> = []
+    private var inFlight: Set<MessageID> = []
+    private var inFlightKeys: Set<DataIdempotencyKey> = []
     private enum StoredResult: Sendable {
         case noResponse
         case response(DataMessage)
@@ -319,7 +321,19 @@ public actor DataDispatcher {
         guard !seen.contains(envelope.messageID) else {
             return reject(envelope.messageID, .duplicate, message: nil)
         }
-        remember(envelope.messageID)
+        // Actor reentrancy must not run a second handler while the first awaits.
+        // Only completed work enters replay history; failures remain retryable.
+        guard inFlight.count < maximumTrackedMessages,
+              !inFlight.contains(envelope.messageID),
+              message.idempotencyKey.map({ !inFlightKeys.contains($0) }) ?? true else {
+            return reject(envelope.messageID, .resourceLimit, message: message)
+        }
+        inFlight.insert(envelope.messageID)
+        if let key = message.idempotencyKey { inFlightKeys.insert(key) }
+        defer {
+            inFlight.remove(envelope.messageID)
+            if let key = message.idempotencyKey { inFlightKeys.remove(key) }
+        }
 
         if message.kind == .cancellation {
             await cancellations.insert(message.correlationID)
@@ -346,9 +360,6 @@ public actor DataDispatcher {
                     return reject(envelope.messageID, .resourceLimit, message: message)
                 }
             }
-            if let key = message.idempotencyKey {
-                mutationResults[key] = response.map(StoredResult.response) ?? .noResponse
-            }
             if let persistentState {
                 do {
                     try await persistentState.record(StoredDataResult(
@@ -362,6 +373,10 @@ public actor DataDispatcher {
                     return reject(envelope.messageID, .handlerFailure, message: message)
                 }
             }
+            if let key = message.idempotencyKey {
+                mutationResults[key] = response.map(StoredResult.response) ?? .noResponse
+            }
+            remember(envelope.messageID)
             eventSink(.accepted(messageID: envelope.messageID, operation: message.operation, kind: message.kind))
             return .handled(response: response)
         } catch {

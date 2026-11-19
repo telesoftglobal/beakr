@@ -186,7 +186,17 @@ public enum ProfileRuntimeStorage {
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         )
-        guard existing.isEmpty else { throw ProfileRuntimeStorageError.unboundNonemptyStorage }
+        let approvedBootstrapDirectories: Set<String> = ["enrollment", "trust"]
+        let containsOnlyApprovedBootstrap = !existing.isEmpty && existing.allSatisfy { url in
+            guard approvedBootstrapDirectories.contains(url.lastPathComponent),
+                  let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else {
+                return false
+            }
+            return values.isDirectory == true && values.isSymbolicLink != true
+        }
+        guard existing.isEmpty || containsOnlyApprovedBootstrap else {
+            throw ProfileRuntimeStorageError.unboundNonemptyStorage
+        }
         try encoder.encode(expected).write(to: paths.manifestURL, options: .atomic)
     }
 

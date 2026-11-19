@@ -1,11 +1,24 @@
 import Foundation
+import Darwin
 import BeakrNetCore
 import BeakrNetAuthority
 import BeakrNetSecurity
 
 @main
 struct BeakrNetCredentialTool {
-    static func main() async throws {
+    static func main() async {
+        do {
+            try await run()
+        } catch {
+            // Do not echo command arguments, credentials, or error userInfo.
+            let failure = error as NSError
+            let message = "🔴 [FAIL] BeakrNetCredentialTool type=\(String(reflecting: type(of: error))) domain=\(failure.domain) code=\(failure.code)\n"
+            FileHandle.standardError.write(Data(message.utf8))
+            exit(EXIT_FAILURE)
+        }
+    }
+
+    private static func run() async throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
         guard let command = arguments.first else {
             printUsage()
@@ -47,11 +60,11 @@ struct BeakrNetCredentialTool {
                 controlPlaneURL: controlPlaneURL,
                 tlsConfiguration: tlsConfiguration
             )
-            print("Created network \(result.manifest.profile.networkID.rawValue.uuidString)")
-            print("Profile: \(result.manifest.profile.id.rawValue.uuidString)")
-            print("Administrator node: \(result.manifest.profile.localNodeID.rawValue.uuidString)")
-            print("Authority: \(result.manifest.authorityID.rawValue.uuidString)")
-            print("Bundle: \(result.bundleURL.path)")
+            print("[INFO] Created network \(result.manifest.profile.networkID.rawValue.uuidString)")
+            print("[INFO] Profile: \(result.manifest.profile.id.rawValue.uuidString)")
+            print("[INFO] Administrator node: \(result.manifest.profile.localNodeID.rawValue.uuidString)")
+            print("[INFO] Authority: \(result.manifest.authorityID.rawValue.uuidString)")
+            print("[INFO] Bundle: \(result.bundleURL.path)")
 
         case "create-authority":
             guard arguments.count == 3 else { printUsage(); return }
@@ -61,7 +74,7 @@ struct BeakrNetCredentialTool {
                 privateKeyURL: URL(fileURLWithPath: arguments[1]),
                 publicKeyURL: URL(fileURLWithPath: arguments[2])
             )
-            print("Created authority \(authority.authorityID.rawValue.uuidString)")
+            print("[INFO] Created authority \(authority.authorityID.rawValue.uuidString)")
 
         case "issue":
             guard arguments.count == 8,
@@ -86,7 +99,7 @@ struct BeakrNetCredentialTool {
                 credential,
                 to: URL(fileURLWithPath: arguments[3])
             )
-            print("Issued credential for \(nodeIdentity.nodeID.rawValue.uuidString)")
+            print("[INFO] Issued credential for \(nodeIdentity.nodeID.rawValue.uuidString)")
 
         case "issue-public":
             guard arguments.count == 9,
@@ -114,19 +127,19 @@ struct BeakrNetCredentialTool {
                 credential,
                 to: URL(fileURLWithPath: arguments[4])
             )
-            print("Issued credential for \(nodeID.rawValue.uuidString)")
+            print("[INFO] Issued credential for \(nodeID.rawValue.uuidString)")
 
         case "inspect":
             guard arguments.count == 2 else { printUsage(); return }
             let credential = try CredentialFiles.loadCredential(
                 from: URL(fileURLWithPath: arguments[1])
             )
-            print("Credential: \(credential.claims.credentialID.uuidString)")
-            print("Issuer: \(credential.claims.issuerID.rawValue.uuidString)")
-            print("Network: \(credential.claims.networkID.rawValue.uuidString)")
-            print("Node: \(credential.claims.nodeID.rawValue.uuidString)")
-            print("Environment: \(credential.claims.environment)")
-            print("Expires: \(credential.claims.expiresAtMilliseconds)")
+            print("[INFO] Credential: \(credential.claims.credentialID.uuidString)")
+            print("[INFO] Issuer: \(credential.claims.issuerID.rawValue.uuidString)")
+            print("[INFO] Network: \(credential.claims.networkID.rawValue.uuidString)")
+            print("[INFO] Node: \(credential.claims.nodeID.rawValue.uuidString)")
+            print("[INFO] Environment: \(credential.claims.environment)")
+            print("[INFO] Expires: \(credential.claims.expiresAtMilliseconds)")
 
         case "verify":
             guard arguments.count == 5,
@@ -143,7 +156,7 @@ struct BeakrNetCredentialTool {
                 networkID: NetworkID(rawValue: networkUUID),
                 environment: arguments[4]
             )
-            print("Credential is valid")
+            print("[INFO] Credential is valid")
 
         case "create-revocations":
             guard arguments.count == 3 else { printUsage(); return }
@@ -155,7 +168,7 @@ struct BeakrNetCredentialTool {
                 snapshot,
                 to: URL(fileURLWithPath: arguments[2])
             )
-            print("Created empty revocation snapshot")
+            print("[INFO] Created empty revocation snapshot")
 
         case "revoke":
             guard arguments.count == 5 else { printUsage(); return }
@@ -179,7 +192,7 @@ struct BeakrNetCredentialTool {
                 snapshot,
                 to: URL(fileURLWithPath: arguments[3])
             )
-            print("Revoked credential \(credential.claims.credentialID.uuidString)")
+            print("[INFO] Revoked credential \(credential.claims.credentialID.uuidString)")
 
         case "verify-revocations":
             guard arguments.count == 3 else { printUsage(); return }
@@ -191,7 +204,7 @@ struct BeakrNetCredentialTool {
                 snapshot,
                 trustedAuthorityPublicKey: publicKey
             )
-            print("Revocation snapshot is valid with \(revoked.count) entries")
+            print("[INFO] Revocation snapshot is valid with \(revoked.count) entries")
 
         case "trust-approve":
             guard arguments.count == 6,
@@ -213,7 +226,7 @@ struct BeakrNetCredentialTool {
                 certificatePublicKey: credential.claims.nodePublicKey
             )
             let generation = await coordinator.membershipSnapshot().claims.generation
-            print("Approved node \(credential.claims.nodeID.rawValue.uuidString) at generation \(generation)")
+            print("[INFO] Approved node \(credential.claims.nodeID.rawValue.uuidString) at generation \(generation)")
 
         case "trust-remove":
             guard arguments.count == 7,
@@ -233,7 +246,7 @@ struct BeakrNetCredentialTool {
                 reason: arguments[6]
             )
             let generation = await coordinator.membershipSnapshot().claims.generation
-            print("Removed and revoked node \(nodeUUID.uuidString) at generation \(generation)")
+            print("[INFO] Removed and revoked node \(nodeUUID.uuidString) at generation \(generation)")
 
 #if os(macOS)
         case "issue-lan-certificate":
@@ -270,7 +283,7 @@ struct BeakrNetCredentialTool {
                 to: URL(fileURLWithPath: arguments[8]),
                 options: .atomic
             )
-            print("Issued LAN certificate for \(nodeID.rawValue.uuidString)")
+            print("[INFO] Issued LAN certificate for \(nodeID.rawValue.uuidString)")
 #endif
 
         default:

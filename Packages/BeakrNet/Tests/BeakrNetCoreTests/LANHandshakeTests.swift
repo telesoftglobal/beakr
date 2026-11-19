@@ -155,6 +155,42 @@ struct LANHandshakeTests {
         }
     }
 
+    @Test("A receiver rejects an old credential after removal and after reopening signed trust")
+    func persistedRevocationRejectsOldCredential() async throws {
+        let fixture = try Fixture()
+        let proof = try await fixture.acceptorProof()
+        let beforeRemoval = try await fixture.authenticateAtInitiator(proof: proof)
+        #expect(beforeRemoval.peerNodeID == fixture.acceptorIdentity.nodeID)
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let trust = try await AuthorityTrustStateCoordinator.open(
+            authority: fixture.authority, networkID: .test, environment: fixture.environment,
+            ledgerURL: root.appendingPathComponent("authority.json"), now: fixture.now
+        )
+        try await trust.approve(
+            credential: fixture.acceptorCredential,
+            certificatePublicKey: fixture.acceptorIdentity.publicKeyRepresentation, now: fixture.now
+        )
+        try await trust.removeAndRevoke(
+            nodeID: fixture.acceptorIdentity.nodeID, reason: "Disposable negative-trust fixture", now: fixture.now
+        )
+        let snapshot = await trust.revocationSnapshot()
+        let fileURL = root.appendingPathComponent("receiver-revocations.json")
+        try CredentialFiles.saveRevocationSnapshot(snapshot, to: fileURL)
+
+        // The sender still presents its original valid credential and signed
+        // proof. A fresh receiver authenticator excludes replay-cache rejection.
+        for evidence in [snapshot, try CredentialFiles.loadRevocationSnapshot(from: fileURL)] {
+            await #expect(throws: LANHandshakeError.revokedCredential) {
+                try await fixture.authenticateAtInitiator(
+                    proof: proof, revocations: evidence, authenticator: LANHandshakeAuthenticator()
+                )
+            }
+        }
+        #expect(fixture.acceptorHello.credential == fixture.acceptorCredential)
+    }
+
     @Test("Credential without LAN scope is rejected")
     func wrongScope() async throws {
         let fixture = try Fixture(acceptorScopes: ["relay"])
@@ -292,9 +328,11 @@ private struct Fixture {
         proof: LANHandshakeProof,
         expectedNetworkID: NetworkID = .test,
         expectedPeer: NodeID? = nil,
-        allowedClockSkew: TimeInterval = 60
+        allowedClockSkew: TimeInterval = 60,
+        revocations: CredentialRevocationSnapshot? = nil,
+        authenticator: LANHandshakeAuthenticator? = nil
     ) async throws -> LANHandshakeAuthentication {
-        try await initiatorAuthenticator.authenticate(
+        try await (authenticator ?? initiatorAuthenticator).authenticate(
             localHello: initiatorHello,
             peerHello: peerHello ?? acceptorHello,
             peerProof: proof,
@@ -303,7 +341,7 @@ private struct Fixture {
             expectedAdvertisementNonce: advertisementNonce,
             trustedAuthorityPublicKey: authority.publicKeyRepresentation,
             environment: environment,
-            revocationSnapshot: revocationSnapshot,
+            revocationSnapshot: revocations ?? revocationSnapshot,
             localCertificateDER: initiatorCertificate,
             localCertificatePublicKey: initiatorIdentity.publicKeyRepresentation,
             peerCertificateDER: acceptorCertificate,

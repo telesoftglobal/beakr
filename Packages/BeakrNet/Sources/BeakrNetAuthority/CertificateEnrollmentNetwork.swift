@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import OSLog
+import CryptoKit
 import BeakrNetCore
 import BeakrNetSecurity
 
@@ -291,7 +292,7 @@ public final class URLSessionCertificateEnrollmentTransport: CertificateEnrollme
 
     public init(
         baseURL: URL,
-        session: URLSession = .shared,
+        session: URLSession? = nil,
         trustedAuthorityCertificateDER: Data? = nil
     ) throws {
         guard baseURL.scheme?.lowercased() == "https",
@@ -305,8 +306,17 @@ public final class URLSessionCertificateEnrollmentTransport: CertificateEnrollme
             throw CertificateEnrollmentNetworkError.invalidTrustAnchor
         }
         self.baseURL = baseURL
-        self.session = session
+        self.session = session ?? Self.makeUncachedSession()
         self.trustedAuthorityCertificateDER = trustedAuthorityCertificateDER
+    }
+
+    private static func makeUncachedSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        return URLSession(configuration: configuration)
     }
 
     public func send(_ request: CertificateEnrollmentHTTPRequest) async throws
@@ -329,7 +339,7 @@ public final class URLSessionCertificateEnrollmentTransport: CertificateEnrollme
         urlRequest.httpBody = request.body
         urlRequest.setValue("no-cache, no-store", forHTTPHeaderField: "cache-control")
         request.headers.forEach { urlRequest.setValue($0.value, forHTTPHeaderField: $0.key) }
-        let delegate = EnrollmentRequestDelegate(
+        let delegate = AuthorityRequestDelegate(
             expectedHostname: baseURL.host!,
             trustedAuthorityCertificateDER: trustedAuthorityCertificateDER
         )
@@ -351,9 +361,9 @@ public final class URLSessionCertificateEnrollmentTransport: CertificateEnrollme
     }
 }
 
-private final class EnrollmentRequestDelegate: NSObject, URLSessionTaskDelegate,
+private final class AuthorityRequestDelegate: NSObject, URLSessionTaskDelegate,
     @unchecked Sendable {
-    private static let logger = Logger(subsystem: "net.beakr", category: "EnrollmentTrust")
+    private static let logger = Logger(subsystem: "net.beakr", category: "AuthorityTrust")
     private let expectedHostname: String
     private let trustedAuthorityCertificateDER: Data?
 
@@ -374,31 +384,79 @@ private final class EnrollmentRequestDelegate: NSObject, URLSessionTaskDelegate,
             return
         }
         guard challenge.protectionSpace.host.caseInsensitiveCompare(expectedHostname) == .orderedSame else {
-            Self.logger.error("Enrollment trust rejected: challenge hostname does not match the configured authority hostname")
+            Self.logRejection(
+                task: task,
+                reason: "hostnameMismatch",
+                detail: "expectedHost=\(expectedHostname) presentedHost=\(challenge.protectionSpace.host)"
+            )
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
         }
         guard let trust = challenge.protectionSpace.serverTrust,
               let anchor = SecCertificateCreateWithData(nil, trustedAuthorityCertificateDER as CFData) else {
-            Self.logger.error("Enrollment trust rejected: server trust or authority certificate is unavailable")
+            Self.logRejection(task: task, reason: "trustMaterialUnavailable")
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
         }
         guard SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, expectedHostname as CFString)) == errSecSuccess,
               SecTrustSetAnchorCertificates(trust, [anchor] as CFArray) == errSecSuccess,
               SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess else {
-            Self.logger.error("Enrollment trust rejected: the pinned authority trust policy could not be configured")
+            Self.logRejection(task: task, reason: "trustPolicyConfigurationFailed")
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
         }
         var trustError: CFError?
         guard SecTrustEvaluateWithError(trust, &trustError) else {
-            let reason = trustError.map { String(describing: $0) } ?? "unknown trust error"
-            Self.logger.error("Enrollment trust rejected: \(reason, privacy: .public)")
+            let chainDER = (SecTrustCopyCertificateChain(trust) as? [SecCertificate] ?? [])
+                .map { SecCertificateCopyData($0) as Data }
+            let expectedAnchorIsPresented = chainDER.contains(trustedAuthorityCertificateDER)
+            let reason = expectedAnchorIsPresented ? "invalidCertificate" : "authorityIdentityMismatch"
+            let expectedFingerprint = Self.shortFingerprint(trustedAuthorityCertificateDER)
+            let presentedFingerprint = chainDER.last.map(Self.shortFingerprint) ?? "unavailable"
+            let errorCode = trustError.map { CFErrorGetCode($0) }
+            let detail = "expectedAuthority=\(expectedFingerprint) presentedAuthority=\(presentedFingerprint)" +
+                (errorCode.map { " trustError=\($0)" } ?? "")
+            Self.logRejection(task: task, reason: reason, detail: detail)
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
         }
         completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+
+    private static func logRejection(
+        task: URLSessionTask,
+        reason: String,
+        detail: String? = nil
+    ) {
+        let operation = operationName(for: task.originalRequest?.url?.path)
+        let suffix = detail.map { " \($0)" } ?? ""
+        logger.error("\(platformPrefix, privacy: .public) [Beakr Trust] \(operation, privacy: .public) rejected reason=\(reason, privacy: .public)\(suffix, privacy: .public)")
+    }
+
+    private static func operationName(for path: String?) -> String {
+        switch path {
+        case RevocationSnapshotHTTPEndpoint.path, ProfileMembershipHTTPEndpoint.path:
+            return "authority-refresh"
+        case CertificateEnrollmentHTTPEndpoint.challengePath,
+             CertificateEnrollmentHTTPEndpoint.enrollmentPath:
+            return "enrollment"
+        default:
+            return "authority-request"
+        }
+    }
+
+    private static func shortFingerprint(_ certificateDER: Data) -> String {
+        SHA256.hash(data: certificateDER).prefix(6).map { String(format: "%02X", $0) }.joined()
+    }
+
+    private static var platformPrefix: String {
+#if os(iOS)
+        "[iOS]"
+#elseif os(macOS)
+        "[macOS]"
+#else
+        "[Apple]"
+#endif
     }
 
     func urlSession(

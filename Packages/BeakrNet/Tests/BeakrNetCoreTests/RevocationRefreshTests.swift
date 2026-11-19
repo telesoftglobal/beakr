@@ -85,6 +85,40 @@ struct RevocationRefreshTests {
         #expect(await consumer.snapshots == [fixture.snapshot])
         #expect(await fixture.controller.nextScheduledAttempt() == now.addingTimeInterval(60))
     }
+
+    @Test("Corrupt or wrong-authority saved revocations never reach a consumer",
+          arguments: [false, true])
+    func corruptPersistedRevocationsFailClosed(wrongAuthority: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let fileURL = root.appendingPathComponent("revocations.json")
+        let authority = CredentialAuthority()
+        if wrongAuthority {
+            try CredentialFiles.saveRevocationSnapshot(
+                CredentialAuthority().issueRevocationSnapshot(revocations: [], now: now), to: fileURL
+            )
+        } else {
+            try Data("{broken".utf8).write(to: fileURL)
+        }
+        let original = try Data(contentsOf: fileURL)
+        let distributor = RevocationSnapshotDistributor(
+            trustedAuthorityPublicKey: authority.publicKeyRepresentation, now: { now }
+        )
+        let consumer = OrderedConsumer(events: EventRecorder())
+        await distributor.register(consumer)
+        let controller = RevocationRefreshController(
+            distributor: distributor, requester: SequenceRequester(results: [.success(nil)]),
+            store: FileRevocationSnapshotStore(fileURL: fileURL), policy: try .init(), now: { now }
+        )
+
+        await #expect(throws: (any Error).self) {
+            _ = try await controller.restorePersistedSnapshot()
+        }
+        #expect(await distributor.latestSnapshot() == nil)
+        #expect(await consumer.snapshots.isEmpty)
+        #expect(try Data(contentsOf: fileURL) == original)
+    }
 }
 
 private extension RevocationRefreshOutcome {

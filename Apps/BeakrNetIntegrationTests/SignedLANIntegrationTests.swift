@@ -181,6 +181,7 @@ struct SignedLANIntegrationTests {
                 requestID: initialRequest.requestID,
                 nodeID: nodeIdentity.nodeID,
                 nodePublicKey: nodeIdentity.publicKeyRepresentation,
+                certificateSigningRequestDER: initialRequest.certificateSigningRequestDER,
                 validity: 3_600
             ),
             leafCertificateDER: leafDER,
@@ -215,6 +216,7 @@ struct SignedLANIntegrationTests {
                 requestID: renewalRequest.requestID,
                 nodeID: nodeIdentity.nodeID,
                 nodePublicKey: nodeIdentity.publicKeyRepresentation,
+                certificateSigningRequestDER: renewalRequest.certificateSigningRequestDER,
                 validity: 7_200
             ),
             leafCertificateDER: leafDER,

@@ -127,13 +127,71 @@ struct MessageRecipient: Identifiable, Codable, Equatable, Sendable {
     var address: UUID { id }
 }
 
+nonisolated enum MessageFlagColor: String, CaseIterable, Codable, Equatable, Sendable {
+    case red
+    case orange
+    case yellow
+    case green
+    case blue
+    case purple
+    case gray
+}
+
 nonisolated struct ContextMailboxMetadata: Codable, Equatable, Sendable {
     var outgoingMessages: [OutgoingMessage]
     var recipients: [MessageRecipient]
     var removedRecipientIDs: Set<UUID>
     var readMessageIDs: Set<UUID>
     var flaggedMessageIDs: Set<UUID>
+    var messageFlagColors: [UUID: MessageFlagColor]
     var sentReadReceiptIDs: Set<UUID>
+    var trashedMessageIDs: Set<UUID>
+
+    private enum CodingKeys: String, CodingKey {
+        case outgoingMessages
+        case recipients
+        case removedRecipientIDs
+        case readMessageIDs
+        case flaggedMessageIDs
+        case messageFlagColors
+        case sentReadReceiptIDs
+        case trashedMessageIDs
+    }
+
+    init(
+        outgoingMessages: [OutgoingMessage],
+        recipients: [MessageRecipient],
+        removedRecipientIDs: Set<UUID>,
+        readMessageIDs: Set<UUID>,
+        flaggedMessageIDs: Set<UUID>,
+        messageFlagColors: [UUID: MessageFlagColor] = [:],
+        sentReadReceiptIDs: Set<UUID>,
+        trashedMessageIDs: Set<UUID> = []
+    ) {
+        self.outgoingMessages = outgoingMessages
+        self.recipients = recipients
+        self.removedRecipientIDs = removedRecipientIDs
+        self.readMessageIDs = readMessageIDs
+        self.flaggedMessageIDs = flaggedMessageIDs
+        self.messageFlagColors = messageFlagColors
+        self.sentReadReceiptIDs = sentReadReceiptIDs
+        self.trashedMessageIDs = trashedMessageIDs
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        outgoingMessages = try container.decode([OutgoingMessage].self, forKey: .outgoingMessages)
+        recipients = try container.decode([MessageRecipient].self, forKey: .recipients)
+        removedRecipientIDs = try container.decode(Set<UUID>.self, forKey: .removedRecipientIDs)
+        readMessageIDs = try container.decode(Set<UUID>.self, forKey: .readMessageIDs)
+        flaggedMessageIDs = try container.decode(Set<UUID>.self, forKey: .flaggedMessageIDs)
+        messageFlagColors = try container.decodeIfPresent(
+            [UUID: MessageFlagColor].self,
+            forKey: .messageFlagColors
+        ) ?? Dictionary(uniqueKeysWithValues: flaggedMessageIDs.map { ($0, .orange) })
+        sentReadReceiptIDs = try container.decode(Set<UUID>.self, forKey: .sentReadReceiptIDs)
+        trashedMessageIDs = try container.decodeIfPresent(Set<UUID>.self, forKey: .trashedMessageIDs) ?? []
+    }
 
     static let empty = ContextMailboxMetadata(
         outgoingMessages: [],
@@ -141,7 +199,8 @@ nonisolated struct ContextMailboxMetadata: Codable, Equatable, Sendable {
         removedRecipientIDs: [],
         readMessageIDs: [],
         flaggedMessageIDs: [],
-        sentReadReceiptIDs: []
+        sentReadReceiptIDs: [],
+        trashedMessageIDs: []
     )
 }
 
@@ -191,6 +250,8 @@ actor ApplicationMessageInbox {
     private var knownReceipts: [UUID: MessageReadReceipt] = [:]
     private var dataState: PersistentDataState?
     private var knownMessageIDs: Set<MessageID> = []
+    private var pendingRecords: [MessageID: Task<Bool, Never>] = [:]
+    private var attachmentGeneration = UUID()
     private var provenanceContext: MessageProvenanceContext?
 
     func updates() -> AsyncStream<IncomingMessage> {
@@ -224,14 +285,27 @@ actor ApplicationMessageInbox {
         return stream
     }
 
-    func record(_ envelope: BeakrNetEnvelope) async {
+    @discardableResult
+    func record(_ envelope: BeakrNetEnvelope) async -> Bool {
+        if knownMessageIDs.contains(envelope.messageID) { return true }
+        if let pending = pendingRecords[envelope.messageID] { return await pending.value }
+        let generation = attachmentGeneration
+        let pending = Task { await self.persistAndPublish(envelope, generation: generation) }
+        pendingRecords[envelope.messageID] = pending
+        let saved = await pending.value
+        if attachmentGeneration == generation { pendingRecords.removeValue(forKey: envelope.messageID) }
+        return saved
+    }
+
+    private func persistAndPublish(_ envelope: BeakrNetEnvelope, generation: UUID) async -> Bool {
+        guard attachmentGeneration == generation else { return false }
         guard let message = try? codec.decode(envelope: envelope),
               message.operation.namespace == "beakr",
-              message.operation.name == "text-message" || message.operation.name == "read-receipt" else { return }
-        guard !knownMessageIDs.contains(envelope.messageID) else { return }
+              message.operation.name == "text-message" || message.operation.name == "read-receipt" else { return false }
+        guard !knownMessageIDs.contains(envelope.messageID) else { return true }
         guard let dataState else {
             reportPersistenceFailure("A received message could not be saved because mailbox storage is not ready.")
-            return
+            return false
         }
         let receivedAt = Date()
         let provenance = provenanceContext.map {
@@ -260,8 +334,10 @@ actor ApplicationMessageInbox {
             ))
         } catch {
             reportPersistenceFailure("A received message could not be saved. Check available storage and try again.")
-            return
+            return false
         }
+        // An old profile's successful write must not publish into a newly attached inbox.
+        guard attachmentGeneration == generation else { return true }
         knownMessageIDs.insert(envelope.messageID)
         process(
             message,
@@ -271,9 +347,12 @@ actor ApplicationMessageInbox {
             storageMessageID: envelope.messageID,
             provenance: provenance
         )
+        return true
     }
 
     func attach(_ dataState: PersistentDataState, context: MessageProvenanceContext) async {
+        attachmentGeneration = UUID()
+        pendingRecords.removeAll()
         self.dataState = dataState
         provenanceContext = context
         knownMessageIDs.removeAll()
@@ -421,7 +500,12 @@ final class MessageComposerModel {
     private(set) var onlineRecipientIDs: Set<UUID> = []
     private(set) var readMessageIDs: Set<UUID> = []
     private(set) var flaggedMessageIDs: Set<UUID> = []
+    private(set) var messageFlagColors: [UUID: MessageFlagColor] = [:]
+    private(set) var trashedMessageIDs: Set<UUID> = []
     private var sentReadReceiptIDs: Set<UUID> = []
+    private var replyMessage: IncomingMessage?
+    var hasReplyContext: Bool { replyMessage != nil }
+    private var mailboxGeneration = UUID()
 
     init(
         messagingService: any HostMessagingService,
@@ -436,6 +520,8 @@ final class MessageComposerModel {
     }
 
     func attachMailboxMetadata(fileURL: URL?) {
+        mailboxGeneration = UUID()
+        clearReplyContext()
         mailboxMetadataURL = fileURL
         incomingMessages = []
         let metadata: ContextMailboxMetadata
@@ -451,7 +537,9 @@ final class MessageComposerModel {
         removedRecipientIDs = metadata.removedRecipientIDs
         readMessageIDs = metadata.readMessageIDs
         flaggedMessageIDs = metadata.flaggedMessageIDs
+        messageFlagColors = metadata.messageFlagColors
         sentReadReceiptIDs = metadata.sentReadReceiptIDs
+        trashedMessageIDs = metadata.trashedMessageIDs
         destinationID = nil
         messageText = ""
     }
@@ -533,17 +621,30 @@ final class MessageComposerModel {
         }
     }
 
-    func prepareReply(to sender: UUID) {
-        destinationID = activeRecipientIDs.contains(sender) ? sender : nil
+    func prepareReply(to message: IncomingMessage) {
+        replyMessage = message
+        destinationID = message.source.flatMap { activeRecipientIDs.contains($0) ? $0 : nil }
         messageText = ""
     }
 
+    func discardDraft() {
+        clearReplyContext()
+        destinationID = nil
+        messageText = ""
+    }
+
+    func clearReplyContext() {
+        replyMessage = nil
+    }
+
     func prepareForward(body: String) {
+        clearReplyContext()
         destinationID = nil
         messageText = "---------- Forwarded message ----------\n\(body)"
     }
 
     func prepareResend(to destination: UUID, body: String) {
+        clearReplyContext()
         destinationID = activeRecipientIDs.contains(destination) ? destination : nil
         messageText = body
     }
@@ -616,6 +717,7 @@ final class MessageComposerModel {
 
     func isRead(_ messageID: UUID) -> Bool { readMessageIDs.contains(messageID) }
     func isFlagged(_ messageID: UUID) -> Bool { flaggedMessageIDs.contains(messageID) }
+    func flagColor(for messageID: UUID) -> MessageFlagColor? { messageFlagColors[messageID] }
 
     func setRead(_ isRead: Bool, messageID: UUID) {
         if isRead { readMessageIDs.insert(messageID) }
@@ -624,6 +726,7 @@ final class MessageComposerModel {
     }
 
     func openIncomingMessage(_ message: IncomingMessage) async {
+        let generation = mailboxGeneration
         setRead(true, messageID: message.id)
         guard !sentReadReceiptIDs.contains(message.id), let source = message.source else { return }
         let receipt = MessageReadReceipt(messageID: message.id, openedAt: Date())
@@ -639,17 +742,28 @@ final class MessageComposerModel {
                     body: body
                 )
             ))
+            guard mailboxGeneration == generation else { return }
             sentReadReceiptIDs.insert(message.id)
             persistMailboxMetadata()
             communicationActivitySequence += 1
         } catch {
+            guard mailboxGeneration == generation else { return }
             statusMessage = "The opened receipt will be retried when this message is opened again."
         }
     }
 
     func toggleFlag(messageID: UUID) {
-        if flaggedMessageIDs.contains(messageID) { flaggedMessageIDs.remove(messageID) }
-        else { flaggedMessageIDs.insert(messageID) }
+        setFlag(flaggedMessageIDs.contains(messageID) ? nil : .orange, messageID: messageID)
+    }
+
+    func setFlag(_ color: MessageFlagColor?, messageID: UUID) {
+        if let color {
+            flaggedMessageIDs.insert(messageID)
+            messageFlagColors[messageID] = color
+        } else {
+            flaggedMessageIDs.remove(messageID)
+            messageFlagColors.removeValue(forKey: messageID)
+        }
         persistMailboxMetadata()
     }
 
@@ -661,6 +775,8 @@ final class MessageComposerModel {
             incomingMessages.removeAll()
             readMessageIDs.removeAll()
             flaggedMessageIDs.removeAll()
+            messageFlagColors.removeAll()
+            trashedMessageIDs.formIntersection(outgoingMessages.map(\.id))
             persistMailboxMetadata()
             statusMessage = "Message history deleted. Queued messages were preserved."
         } catch {
@@ -681,26 +797,20 @@ final class MessageComposerModel {
                 continue
             }
         }
-        outgoingMessages.removeAll { deletedIDs.contains($0.id) }
-        persistOutgoingMessages()
+        trashedMessageIDs.formUnion(deletedIDs)
+        persistMailboxMetadata()
         if deletedIDs.count == queuedIDs.count {
-            statusMessage = queuedIDs.isEmpty ? "There are no queued messages to delete." : "Queued messages deleted."
+            statusMessage = queuedIDs.isEmpty ? "There are no queued messages to move." : "Queued messages moved to Trash."
         } else {
             statusMessage = "Some queued messages could not be deleted."
         }
     }
 
     func deleteIncomingMessage(id: UUID) async {
-        do {
-            try await inbox?.delete(correlationID: id)
-            incomingMessages.removeAll { $0.id == id }
-            readMessageIDs.remove(id)
-            flaggedMessageIDs.remove(id)
-            persistMailboxMetadata()
-            statusMessage = "Message deleted."
-        } catch {
-            statusMessage = "The message could not be deleted."
-        }
+        guard incomingMessages.contains(where: { $0.id == id }) else { return }
+        trashedMessageIDs.insert(id)
+        persistMailboxMetadata()
+        statusMessage = "Message moved to Trash."
     }
 
     func deleteOutgoingMessage(id: UUID) async {
@@ -713,9 +823,38 @@ final class MessageComposerModel {
                 return
             }
         }
+        trashedMessageIDs.insert(id)
+        persistMailboxMetadata()
+        statusMessage = "Message moved to Trash."
+    }
+
+    func restoreMessage(id: UUID) {
+        guard trashedMessageIDs.remove(id) != nil else { return }
+        persistMailboxMetadata()
+        statusMessage = "Message restored."
+    }
+
+    func permanentlyDeleteIncomingMessage(id: UUID) async {
+        do {
+            try await inbox?.delete(correlationID: id)
+            incomingMessages.removeAll { $0.id == id }
+            trashedMessageIDs.remove(id)
+            readMessageIDs.remove(id)
+            flaggedMessageIDs.remove(id)
+            messageFlagColors.removeValue(forKey: id)
+            persistMailboxMetadata()
+            statusMessage = "Message permanently deleted."
+        } catch {
+            statusMessage = "The message could not be permanently deleted."
+        }
+    }
+
+    func permanentlyDeleteOutgoingMessage(id: UUID) {
+        guard trashedMessageIDs.contains(id) else { return }
         outgoingMessages.removeAll { $0.id == id }
-        persistOutgoingMessages()
-        statusMessage = "Message deleted."
+        trashedMessageIDs.remove(id)
+        persistMailboxMetadata()
+        statusMessage = "Message permanently deleted."
     }
 
     func send() async {
@@ -725,6 +864,8 @@ final class MessageComposerModel {
             return
         }
 
+        let generation = mailboxGeneration
+        let repliedMessage = replyMessage.flatMap { $0.source == destinationUUID ? $0 : nil }
         let correlationID = DataCorrelationID()
         let outgoing = OutgoingMessage(
             id: correlationID.rawValue,
@@ -743,12 +884,14 @@ final class MessageComposerModel {
             )
             if let provenanceService = messagingService as? any OutgoingProvenanceMessagingService {
                 let provenance = try await provenanceService.sendWithProvenance(request)
+                guard mailboxGeneration == generation else { return }
                 if let index = outgoingMessages.firstIndex(where: { $0.id == correlationID.rawValue }) {
                     outgoingMessages[index].provenance = provenance
                     outgoingMessages[index].deliveryAttemptCount = (outgoingMessages[index].deliveryAttemptCount ?? 0) + 1
                 }
             } else {
                 try await messagingService.send(request)
+                guard mailboxGeneration == generation else { return }
                 if let index = outgoingMessages.firstIndex(where: { $0.id == correlationID.rawValue }) {
                     outgoingMessages[index].deliveryAttemptCount = (outgoingMessages[index].deliveryAttemptCount ?? 0) + 1
                 }
@@ -759,21 +902,31 @@ final class MessageComposerModel {
             statusMessage = acceptedState == .sent
                 ? "Message sent. Waiting for delivery confirmation."
                 : "Recipient is offline. The message will be sent when the device reconnects."
+            // Queue admission, not composer presentation or eventual delivery,
+            // establishes that the original message has been read.
+            if mailboxGeneration == generation, let repliedMessage {
+                clearReplyContext()
+                await openIncomingMessage(repliedMessage)
+            }
         } catch BeakrMessagingSetupError.notConfigured {
+            guard mailboxGeneration == generation else { return }
             recordDeliveryFailure(id: correlationID.rawValue, error: "Messaging is not configured.")
             updateMessage(id: correlationID.rawValue, state: .failed)
             statusMessage = "Messaging is not implemented in this build."
         } catch {
+            guard mailboxGeneration == generation else { return }
             recordDeliveryFailure(id: correlationID.rawValue, error: String(describing: error))
             updateMessage(id: correlationID.rawValue, state: .failed)
             let nsError = error as NSError
-            print("[Beakr Delivery] queue admission failed: \(nsError.domain) \(nsError.code) \(nsError.localizedDescription)")
+            BeakrDiagnosticLog.emit("queue admission failed: \(nsError.domain) \(nsError.code) \(nsError.localizedDescription)", level: .failure, logger: BeakrDiagnosticLog.delivery)
             if let runtimeError = error as? ApplicationLANRuntimeError {
                 switch runtimeError {
                 case .notRunning:
                     statusMessage = "Messaging is not running for the active network. Retry Device Setup."
                 case .missingMembershipSnapshot:
                     statusMessage = "The selected device is not in the active network membership. Refresh the network or choose a current device."
+                case .localMembershipRemoved:
+                    statusMessage = "Membership has been revoked for this device. A new invitation is required to rejoin this network."
                 case .missingRevocationSnapshot:
                     statusMessage = "Network trust information is unavailable. Retry Device Setup."
                 case .alreadyRunning:
@@ -832,7 +985,9 @@ final class MessageComposerModel {
             removedRecipientIDs: removedRecipientIDs,
             readMessageIDs: readMessageIDs,
             flaggedMessageIDs: flaggedMessageIDs,
-            sentReadReceiptIDs: sentReadReceiptIDs
+            messageFlagColors: messageFlagColors,
+            sentReadReceiptIDs: sentReadReceiptIDs,
+            trashedMessageIDs: trashedMessageIDs
         )
     }
 }

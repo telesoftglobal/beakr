@@ -124,7 +124,7 @@ public extension CredentialAuthority {
         controlPlaneURL: URL,
         authorityCertificateDER: Data,
         serviceScopes: [String] = ["lan"],
-        validity: TimeInterval = 10 * 60,
+        validity: TimeInterval = 15 * 60,
         now: Date = Date()
     ) throws -> NetworkInvitation {
         let displayName = networkDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -430,6 +430,16 @@ public actor NetworkInvitationHTTPEndpoint {
     }
 }
 
+public struct NetworkJoinResult: Equatable, Sendable {
+    public let request: NetworkJoinRequest
+    public let credential: NodeCredential
+
+    public init(request: NetworkJoinRequest, credential: NodeCredential) {
+        self.request = request
+        self.credential = credential
+    }
+}
+
 public struct NetworkInvitationClient: Sendable {
     private let transport: any CertificateEnrollmentHTTPTransport
 
@@ -439,6 +449,14 @@ public struct NetworkInvitationClient: Sendable {
 
     public func join(invitation: NetworkInvitation, identity: NodeIdentity) async throws
         -> NodeCredential {
+        try await joinResult(invitation: invitation, identity: identity).credential
+    }
+
+    /// Returns the exact signed request accepted by the authority together with
+    /// its credential. Callers that persist enrollment state must retain this
+    /// request ID instead of inventing a local surrogate after the join.
+    public func joinResult(invitation: NetworkInvitation, identity: NodeIdentity) async throws
+        -> NetworkJoinResult {
         let request = try NetworkJoinRequest.signed(invitation: invitation, identity: identity)
         let response = try await transport.send(.init(
             method: "POST",
@@ -470,7 +488,7 @@ public struct NetworkInvitationClient: Sendable {
               credential.claims.serviceScopes == invitation.serviceScopes else {
             throw NetworkInvitationError.nodeIdentityMismatch
         }
-        return credential
+        return NetworkJoinResult(request: request, credential: credential)
     }
 }
 

@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import BeakrNetAuthority
 import BeakrNetCore
+import BeakrNetControl
 import BeakrNetHost
 
 @Suite("Host protocol service integration")
@@ -178,6 +179,7 @@ struct HostServicesTests {
             transport: transport,
             coordinator: coordinator,
             driver: driver,
+            incomingEnvelopeSink: { _ in true },
             deliveryAcknowledgementSink: { acknowledgement in
                 await receipts.record(acknowledgement)
             }
@@ -212,7 +214,9 @@ struct HostServicesTests {
             payload: try JSONEncoder().encode(acknowledgement)
         ))
 
-        for _ in 0..<50 where await receipts.received.isEmpty { await Task.yield() }
+        for _ in 0..<100 where await receipts.received.isEmpty {
+            try await Task.sleep(for: .milliseconds(1))
+        }
         #expect(await receipts.received == [acknowledgement])
         #expect(await session.pendingDelivery(for: outgoing.messageID) == nil)
 
@@ -236,6 +240,158 @@ struct HostServicesTests {
         )
 
         await owner.setPermitted(false)
+    }
+
+    @Test("Authenticated peer lifecycle notices are handled as Control, not application Data")
+    func authenticatedPeerLifecycleNotice() async throws {
+        let networkID = NetworkID()
+        let sessionID = SessionID()
+        let local = NodeID()
+        let remote = NodeID()
+        let session = BeakrNetSession(
+            id: sessionID,
+            networkID: networkID,
+            localNodeID: local,
+            remoteNodeID: remote,
+            state: .active
+        )
+        let coordinator = PeerRouteCoordinator(networkID: networkID, remoteNodeID: remote)
+        let driver = SessionDeliveryDriver(session: session, coordinator: coordinator)
+        let transport = AcknowledgementTestTransport()
+        let receipts = PeerLifecycleReceiptLog()
+        let applicationDeliveries = EnvelopeReceiptLog()
+        let owner = await AuthenticatedTransportRouteOwner(
+            transport: transport,
+            coordinator: coordinator,
+            driver: driver,
+            incomingEnvelopeSink: { envelope in await applicationDeliveries.record(envelope); return true },
+            peerLifecycleSink: { nodeID, notice in await receipts.record(nodeID, notice: notice) }
+        )
+        await owner.setPermitted(true)
+
+        let context = ControlContext(
+            networkID: networkID,
+            sourceNodeID: remote,
+            destinationNodeID: local,
+            sessionID: sessionID
+        )
+        let notice = PeerLifecycleNotice(reason: .applicationBackgrounded)
+        let envelope = try ControlCodec().makeEnvelope(
+            for: .peerLifecycle(ControlHeader(type: .peerLifecycle, context: context), notice),
+            sequenceNumber: 1,
+            createdAt: Date()
+        )
+        await transport.inject(envelope)
+
+        for _ in 0..<100 where await receipts.received.isEmpty {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(await receipts.received == [.init(nodeID: remote, notice: notice)])
+        #expect(await applicationDeliveries.received.isEmpty)
+    }
+
+    @Test("Address reports send on admission and changes notify observers without a presence change")
+    func peerNetworkInfoEvents() async throws {
+        let network = NetworkID(), local = NodeID(), remote = NodeID(), session = SessionID()
+        let revocations = RevocationSnapshotDistributor(verifier: { _, _ in })
+        _ = try await revocations.publish(CredentialRevocationSnapshot(
+            claims: CredentialRevocationClaims(issuerID: AuthorityID(rawValue: UUID()),
+                generatedAtMilliseconds: 1_000_000, revocations: []), issuerSignature: Data([1])))
+        let policy = ProfileRoutePolicyController()
+        await policy.setAllRoutesPermitted(true)
+        await policy.setLANPermitted(true)
+        let registry = ProfileConnectionRegistry(networkID: network, localNodeID: local,
+            revocations: revocations, routePolicy: policy)
+        let updates = await registry.peerNodeIDUpdates()
+        let log = NetworkInfoPeerUpdateLog()
+        let observer = Task { for await ids in updates { await log.record(ids) } }
+        defer { observer.cancel() }
+        await registry.publishNetworkInfo(.init(ipv4Address: "192.0.2.1"))
+        let transport = AcknowledgementTestTransport()
+        _ = try await registry.admit(transport: transport, remoteNodeID: remote, sessionID: session)
+        for _ in 0..<1000 where await transport.sent.isEmpty {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let first = try #require(await transport.sent.first)
+        guard case .peerNetworkInfo(_, let info) = try ControlCodec().decode(envelope: first) else {
+            Issue.record("Admission must send the cached local report")
+            return
+        }
+        #expect(info.ipv4Address == "192.0.2.1")
+        await registry.publishNetworkInfo(.init(ipv4Address: "192.0.2.2"))
+        let last = try #require(await transport.sent.last)
+        guard case .peerNetworkInfo(_, let changed) = try ControlCodec().decode(envelope: last) else {
+            Issue.record("Address changes must be sent")
+            return
+        }
+        #expect(changed.ipv4Address == "192.0.2.2")
+        for _ in 0..<1000 where await log.values.last != Set([remote]) {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let count = await log.values.count
+        // Repeated reports renew freshness, but do not generate repeated UI updates.
+        for (index, address) in ["192.0.2.10", "192.0.2.10", "192.0.2.11"].enumerated() {
+            let header = ControlHeader(type: .peerNetworkInfo, context: ControlContext(
+                networkID: network, sourceNodeID: remote, destinationNodeID: local, sessionID: session))
+            await transport.inject(try ControlCodec().makeEnvelope(
+                for: .peerNetworkInfo(header, .init(ipv4Address: address)),
+                sequenceNumber: UInt64(index), createdAt: Date()))
+            for _ in 0..<1000 where await registry.peerReportedIPv4Addresses()[remote] != address {
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            #expect(await registry.peerReportedIPv4Addresses()[remote] == address)
+            if index == 0 {
+                for _ in 0..<1000 where await log.values.count < count + 1 {
+                    try await Task.sleep(for: .milliseconds(1))
+                }
+            }
+        }
+        for _ in 0..<1000 where await log.values.count < count + 2 {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(await log.values.count == count + 2)
+        #expect(await registry.peerNodeIDs() == [remote])
+        await registry.remove(transport: transport)
+        #expect(await registry.peerReportedIPv4Addresses().isEmpty)
+        for _ in 0..<1000 where await log.values.last != Set<NodeID>() {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(await log.values.last == Set<NodeID>())
+    }
+
+    @Test("Peer IPv4 reports remain diagnostic and expire or clear with route removal")
+    func peerNetworkInfoLifetime() async throws {
+        let networkID = NetworkID()
+        let sessionID = SessionID()
+        let local = NodeID()
+        let remote = NodeID()
+        let session = BeakrNetSession(id: sessionID, networkID: networkID,
+            localNodeID: local, remoteNodeID: remote, state: .active)
+        let coordinator = PeerRouteCoordinator(networkID: networkID, remoteNodeID: remote)
+        let driver = SessionDeliveryDriver(session: session, coordinator: coordinator)
+        let transport = AcknowledgementTestTransport()
+        let deliveries = EnvelopeReceiptLog()
+        let owner = await AuthenticatedTransportRouteOwner(
+            transport: transport, coordinator: coordinator, driver: driver,
+            incomingEnvelopeSink: { await deliveries.record($0); return true }
+        )
+        await owner.setPermitted(true)
+        let header = ControlHeader(type: .peerNetworkInfo, context: ControlContext(
+            networkID: networkID, sourceNodeID: remote, destinationNodeID: local, sessionID: sessionID
+        ))
+        let envelope = try ControlCodec().makeEnvelope(
+            for: .peerNetworkInfo(header, .init(ipv4Address: "192.0.2.10")),
+            sequenceNumber: 1, createdAt: Date()
+        )
+        await transport.inject(envelope)
+        for _ in 0..<100 where await owner.peerReportedIPv4Address() == nil {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(await owner.peerReportedIPv4Address() == "192.0.2.10")
+        #expect(await owner.peerReportedIPv4Address(now: Date().addingTimeInterval(21)) == nil)
+        #expect(await deliveries.received.isEmpty)
+        await owner.setPermitted(false)
+        #expect(await owner.peerReportedIPv4Address() == nil)
     }
 
     @Test("Connection registry requires revocation state and removes the complete route")
@@ -292,6 +448,48 @@ struct HostServicesTests {
         #expect(await connection.routeOwner.generation() == nil)
     }
 
+    @Test("Removing an older transport preserves a replacement for the same peer")
+    func replacementTransportHandoff() async throws {
+        let networkID = NetworkID()
+        let local = NodeID()
+        let remote = NodeID()
+        let sessionID = SessionID()
+        let revocations = RevocationSnapshotDistributor(verifier: { _, _ in })
+        _ = try await revocations.publish(CredentialRevocationSnapshot(
+            claims: CredentialRevocationClaims(
+                issuerID: AuthorityID(rawValue: UUID()),
+                generatedAtMilliseconds: 1_000_000,
+                revocations: []
+            ),
+            issuerSignature: Data([1])
+        ))
+        let registry = ProfileConnectionRegistry(
+            networkID: networkID,
+            localNodeID: local,
+            revocations: revocations,
+            routePolicy: ProfileRoutePolicyController()
+        )
+        let olderTransport = RevocableHostTestTransport(kind: .local, peerNodeID: remote)
+        let replacementTransport = RevocableHostTestTransport(kind: .local, peerNodeID: remote)
+
+        _ = try await registry.admit(
+            transport: olderTransport,
+            remoteNodeID: remote,
+            sessionID: sessionID
+        )
+        _ = try await registry.admit(
+            transport: replacementTransport,
+            remoteNodeID: remote,
+            sessionID: sessionID
+        )
+        await registry.remove(transport: olderTransport)
+
+        #expect(await registry.connectionCount() == 1)
+        #expect(await registry.peerNodeIDs() == Set([remote]))
+        #expect(await olderTransport.isClosed)
+        #expect(await replacementTransport.isClosed == false)
+    }
+
     @Test("Bonjour bridge admits only the expected authenticated peer and removes path loss")
     func profileLANConnectionController() async throws {
         let networkID = NetworkID()
@@ -330,11 +528,85 @@ struct HostServicesTests {
         #expect(await controller.connectionCount() == 1)
         #expect(await registry.connectionCount() == 1)
         #expect(await peer.session.remoteNodeID == remote)
+        #expect(await controller.peerIPAddresses()[remote] == "192.0.2.10")
+        #expect(await controller.resourceSnapshot().activeTransports == 1)
+        #expect(await controller.resourceSnapshot().pendingHandshakes == 0)
 
         await controller.connectionEnded(connection.id)
+        #expect(await controller.peerIPAddresses().isEmpty)
+        #expect(await controller.resourceSnapshot().activeTransports == 0)
+        #expect(await controller.resourceSnapshot().pendingHandshakes == 0)
         #expect(await controller.connectionCount() == 0)
         #expect(await registry.connectionCount() == 0)
         #expect(await transport.isClosed)
+    }
+
+    @Test("A replacement LAN connection supersedes the stale route for the same peer")
+    func replacementLANConnection() async throws {
+        let networkID = NetworkID()
+        let local = NodeID()
+        let remote = NodeID()
+        let revocations = RevocationSnapshotDistributor(verifier: { _, _ in })
+        _ = try await revocations.publish(CredentialRevocationSnapshot(
+            claims: CredentialRevocationClaims(
+                issuerID: AuthorityID(rawValue: UUID()),
+                generatedAtMilliseconds: 1_000_000,
+                revocations: []
+            ),
+            issuerSignature: Data([1])
+        ))
+        let registry = ProfileConnectionRegistry(
+            networkID: networkID,
+            localNodeID: local,
+            revocations: revocations,
+            routePolicy: ProfileRoutePolicyController()
+        )
+        let firstConnection = HostBonjourConnection()
+        let secondConnection = HostBonjourConnection()
+        let firstTransport = RevocableHostTestTransport(kind: .local, peerNodeID: remote)
+        let secondTransport = RevocableHostTestTransport(kind: .local, peerNodeID: remote)
+        let controller = ProfileLANConnectionController(
+            registry: registry,
+            maximumConnections: 1,
+            authenticate: { connection, _, _, _ in
+                connection.id == firstConnection.id ? firstTransport : secondTransport
+            }
+        )
+        // This stream keeps only its newest snapshot. Consume each controlled
+        // transition rather than waiting for a fixed number of coalescible events.
+        var peerUpdates = await registry.peerNodeIDUpdates().makeAsyncIterator()
+        #expect(await peerUpdates.next() == Set<NodeID>())
+
+        let sessionID = SessionID()
+        _ = try await controller.authenticateAndAdmit(
+            connection: firstConnection,
+            role: .acceptor,
+            expectedPeerNodeID: remote,
+            advertisementNonce: Data(repeating: 1, count: 32),
+            sessionID: sessionID
+        )
+        #expect(await peerUpdates.next() == Set([remote]))
+        _ = try await controller.authenticateAndAdmit(
+            connection: secondConnection,
+            role: .acceptor,
+            expectedPeerNodeID: remote,
+            advertisementNonce: Data(repeating: 2, count: 32),
+            sessionID: sessionID
+        )
+        #expect(await peerUpdates.next() == Set([remote]))
+
+        #expect(await controller.connectionCount() == 1)
+        #expect(await registry.connectionCount() == 1)
+        #expect(await registry.peerNodeIDs() == Set([remote]))
+        #expect(await firstTransport.isClosed)
+        #expect(await controller.peerIPAddresses()[remote] == "192.0.2.10")
+        await controller.connectionEnded(firstConnection.id)
+        #expect(await controller.peerIPAddresses()[remote] == "192.0.2.10")
+
+        await controller.connectionEnded(secondConnection.id)
+        #expect(await controller.peerIPAddresses().isEmpty)
+        #expect(await registry.peerNodeIDs().isEmpty)
+        #expect(await secondTransport.isClosed)
     }
 
     @Test("Profile Bonjour runtime owns lifecycle and rejects unresolved accepted peers")
@@ -375,7 +647,10 @@ struct HostServicesTests {
 
         let accepted = HostBonjourConnection()
         listener.send(.connection(accepted))
-        for _ in 0..<20 where !accepted.cancelled { await Task.yield() }
+        let rejectionDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !accepted.cancelled, ContinuousClock.now < rejectionDeadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
         #expect(accepted.cancelled)
         #expect(await registry.connectionCount() == 0)
 
@@ -383,6 +658,66 @@ struct HostServicesTests {
         #expect(!(await runtime.running()))
         #expect(browser.cancelled)
         #expect(listener.cancelled)
+    }
+
+    @Test("Accepted Bonjour connection removal clears authenticated peer presence")
+    func acceptedBonjourConnectionRemoval() async throws {
+        let local = NodeID()
+        let remote = NodeID()
+        let revocations = RevocationSnapshotDistributor(verifier: { _, _ in })
+        _ = try await revocations.publish(CredentialRevocationSnapshot(
+            claims: CredentialRevocationClaims(
+                issuerID: AuthorityID(rawValue: UUID()),
+                generatedAtMilliseconds: 1_000_000,
+                revocations: []
+            ),
+            issuerSignature: Data([1])
+        ))
+        let routePolicy = ProfileRoutePolicyController()
+        let registry = ProfileConnectionRegistry(
+            networkID: NetworkID(),
+            localNodeID: local,
+            revocations: revocations,
+            routePolicy: routePolicy
+        )
+        let transport = RevocableHostTestTransport(kind: .local, peerNodeID: remote)
+        let connections = ProfileLANConnectionController(
+            registry: registry,
+            authenticate: { _, _, _, _ in transport }
+        )
+        let browser = HostBonjourBrowser()
+        let listener = HostBonjourListener()
+        let runtime = ProfileBonjourRuntimeService.make(
+            localNodeID: local,
+            localAdvertisementNonce: Data(repeating: 1, count: 32),
+            browser: browser,
+            connectionFactory: HostBonjourConnectionFactory(),
+            listener: listener,
+            connections: connections,
+            sessionID: { _ in SessionID() },
+            acceptedPeer: { _ in
+                ProfileAcceptedPeerContext(expectedPeerNodeID: remote, sessionID: SessionID())
+            }
+        )
+
+        await runtime.start()
+        let accepted = HostBonjourConnection()
+        listener.send(.connection(accepted))
+        let admissionDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await registry.peerCount() == 0, ContinuousClock.now < admissionDeadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(await registry.peerNodeIDs() == Set([remote]))
+
+        listener.send(.connectionEnded(accepted.id))
+        let removalDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await registry.peerCount() != 0, ContinuousClock.now < removalDeadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(await registry.peerNodeIDs().isEmpty)
+        #expect(await transport.isClosed)
+
+        await runtime.stop()
     }
 }
 
@@ -448,7 +783,31 @@ private actor AcknowledgementReceiptLog {
     func record(_ acknowledgement: DeliveryAcknowledgement) { received.append(acknowledgement) }
 }
 
-private actor AcknowledgementTestTransport: BeakrNetTransport {
+private struct PeerLifecycleReceipt: Equatable, Sendable {
+    let nodeID: NodeID
+    let notice: PeerLifecycleNotice
+}
+
+private actor PeerLifecycleReceiptLog {
+    private(set) var received: [PeerLifecycleReceipt] = []
+    func record(_ nodeID: NodeID, notice: PeerLifecycleNotice) {
+        received.append(PeerLifecycleReceipt(nodeID: nodeID, notice: notice))
+    }
+}
+
+private actor EnvelopeReceiptLog {
+    private(set) var received: [BeakrNetEnvelope] = []
+    func record(_ envelope: BeakrNetEnvelope) { received.append(envelope) }
+}
+
+private actor NetworkInfoPeerUpdateLog {
+    private(set) var values: [Set<NodeID>] = []
+    func record(_ ids: Set<NodeID>) { values.append(ids) }
+}
+
+private actor AcknowledgementTestTransport: BeakrNetTransport, RevocationSnapshotConsumer {
+    nonisolated var revocationConsumerID: TransportID { id }
+    func installRevocationSnapshot(_ snapshot: CredentialRevocationSnapshot) {}
     nonisolated let id = TransportID()
     nonisolated let kind = TransportKind.local
     nonisolated let capabilities = TransportCapabilities(
@@ -510,6 +869,7 @@ private actor RevocableHostTestTransport: ProfileAuthenticatedPeerTransport {
 }
 
 private final class HostBonjourConnection: BonjourConnection, @unchecked Sendable {
+    let remoteIPAddress: String? = "192.0.2.10"
     private let lock = NSLock()
     let id = UUID()
     private var isCancelled = false
